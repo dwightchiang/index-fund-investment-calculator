@@ -701,7 +701,11 @@ function calc2(it){
 function chipClass(v){ return v===null?"empty":v<TRIGGER?"hit":v<NEAR?"near":"off"; }
 /* 金额显示：负数原样显示，未填分位/无行情显示 — */
 function amtView(r){
-  if(r.tag==="na" || r.tag==="near" || r.tag==="off" || r.min===null || r.amount===undefined)
+  if(r.tag==="na"){
+    // 已填分位但没行情 → 提示去填涨跌，而不是显示「—」
+    return r.min===null ? { txt:"—", cls:"zero" } : { txt:"待填", cls:"zero" };
+  }
+  if(r.tag==="near" || r.tag==="off" || r.min===null || r.amount===undefined)
     return { txt:"—", cls:"zero" };
   const v=r.amount;
   if(v===0) return { txt:"¥0", cls:"zero" };
@@ -1045,6 +1049,25 @@ function tradingNow(){
   const hm=d.getHours()*100+d.getMinutes();
   return hm>=925 && hm<=1505;
 }
+/* 批量取数：有代理/本地接口时一次问多个代码，比逐个快一个数量级 */
+function proxyBatchUrl(){
+  const p=proxyUrl();
+  if(!p) return "";
+  return p.replace(/\/quote(\?.*)?$/,"/quotes");
+}
+async function fetchBatch(codes){
+  const base=proxyBatchUrl();
+  const url = base
+    ? (base.includes("?") ? base+"codes="+codes.join(",")
+                          : base+"?codes="+codes.join(","))
+    : "/api/quotes?codes="+codes.map(encodeURIComponent).join(",");
+  const r=await fetch(url,{cache:"no-store"});
+  if(!r.ok) throw new Error("batch-"+r.status);
+  const j=await r.json();
+  return j.items||{};
+}
+function canBatch(){ return !!proxyBatchUrl() || API_OK!==false; }
+
 async function refreshQuotes(scope, force){
   scope = scope || "all";
   // 定投/回撤优先，监测排在后面，避免一次拉太多把要紧的行情拖慢
@@ -1057,16 +1080,42 @@ async function refreshQuotes(scope, force){
   const items = scope==="main" ? mainItems : monItems;
   const codes=[...new Set(items.map(x=>x.code))];
   codes.filter(c=>NO_QUOTE.has(c)).forEach(c=>{ quotes[c]={err:"无行情", at:Date.now()}; });
-  // 90 秒内取过的直接复用，避免切页签、反复点刷新时重复请求
+  // 90 秒内取过的直接复用
   const todo=codes.filter(c=>!NO_QUOTE.has(c) && !(quotes[c] && quotes[c].at && Date.now()-quotes[c].at<90000));
   $("#status").textContent = todo.length ? `刷新 0/${todo.length}` : "用缓存";
+
   let done=0;
-  await pool(todo, 6, async c=>{
-    try{ quotes[c]=await fetchQuote(c, force); }
-    catch(e){ quotes[c]={err:"无行情"}; }
-    quotes[c].at=Date.now();
+  const mark=(c,got)=>{
+    if(got && !got.error && got.price>0){
+      quotes[c]={price:+got.price, prev:+got.prev||0, pct:+got.pct, date:String(got.date||"").replace(/-/g,""),
+                 src:got.src||"代理", at:Date.now()};
+      delete failCache[c];
+    }else{
+      quotes[c]={err:"无行情", at:Date.now()};
+    }
     done++; $("#status").textContent=`刷新 ${done}/${todo.length}`;
-  });
+  };
+
+  if(canBatch() && todo.length>1){
+    const CH=12;
+    for(let i=0;i<todo.length;i+=CH){
+      const chunk=todo.slice(i,i+CH);
+      try{
+        const got=await fetchBatch(chunk);
+        chunk.forEach(c=>mark(c, got[c]));
+      }catch(e){
+        // 批量失败就退回逐个
+        await pool(chunk, 4, async c=>{
+          try{ mark(c, await fetchQuote(c, force)); }catch(err){ mark(c, null); }
+        });
+      }
+    }
+  }else{
+    await pool(todo, 6, async c=>{
+      try{ mark(c, await fetchQuote(c, force)); }catch(e){ mark(c, null); }
+    });
+  }
+
   if(scope!=="mon") lastMainAt=Date.now();
   if(scope!=="main") lastMonAt=Date.now();
   try{ localStorage.setItem(QTS, JSON.stringify({main:lastMainAt, mon:lastMonAt})); }catch(e){}
