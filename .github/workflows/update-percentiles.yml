@@ -1,0 +1,37 @@
+name: update-percentiles
+
+# 每个交易日收盘后自动拉一次指数估值分位，写进仓库根目录的 data/percentiles.json
+# 北京时间 15:35 = UTC 07:35（GitHub 的 cron 用 UTC）
+
+on:
+  schedule:
+    - cron: "35 7 * * 1-5"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 拉取分位
+        run: python tools/fetch_percentiles.py --out data/percentiles.json
+
+      - name: 提交
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/percentiles.json
+          if git diff --staged --quiet; then
+            echo "没有变化，跳过提交"
+          else
+            git commit -m "chore: 更新指数估值分位 $(date -u +%Y-%m-%d)"
+            git push
+          fi
