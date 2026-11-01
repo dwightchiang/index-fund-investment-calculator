@@ -612,9 +612,19 @@ async function loadPercentiles(force){
     }catch(e){}
   }
   try{
-    const src=(state.pctUrl||"").trim() || "data/percentiles.json";
-    const r=await fetch(src+(src.includes("?")?"&":"?")+"_="+Date.now(), {cache:"no-store"});
-    if(!r.ok) throw new Error("HTTP "+r.status);
+    // 依次尝试：自定义地址 → data/percentiles.json → 根目录 percentiles.json
+    const urls = (state.pctUrl||"").trim()
+      ? [(state.pctUrl||"").trim()]
+      : ["data/percentiles.json", "percentiles.json"];
+    let r = null, lastErr = null;
+    for(const u of urls){
+      try{
+        const rr = await fetch(u+(u.includes("?")?"&":"?")+"_="+Date.now(), {cache:"no-store"});
+        if(rr.ok){ r = rr; break; }
+        lastErr = "HTTP "+rr.status;
+      }catch(e){ lastErr = e.message; }
+    }
+    if(!r) throw new Error(lastErr||"not found");
     const j=await r.json();
     if(j && j.items){
       AUTO=j;
@@ -1077,6 +1087,15 @@ $("#btnRefresh").onclick=async ()=>{
 };
 $("#btnReload").onclick=async ()=>{ const ok=await loadPercentiles(true); render(); alert(ok?"分位已更新":"没读到数据文件（本地打开时正常）"); };
 $("#proxyInput").value = state.proxy || "";
+$("#pctUrlInput").value = state.pctUrl || "";
+$("#btnPctUrlSave").onclick=async ()=>{
+  state.pctUrl = ($("#pctUrlInput").value||"").trim();
+  save();
+  try{ localStorage.removeItem("dca-pct-cache"); }catch(e){}
+  const ok = await loadPercentiles(true);
+  render();
+  alert(ok ? "分位地址已保存，数据已更新" : "保存了，但没读到数据（检查地址能不能打开）");
+};
 $("#btnProxySave").onclick=()=>{
   state.proxy = ($("#proxyInput").value||"").trim();
   save();
