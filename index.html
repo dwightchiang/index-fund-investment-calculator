@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0f172a">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📈</text></svg>">
 <title>指数定投计算器</title>
 <style>
   :root{
@@ -474,14 +475,16 @@ function fetchersFor(code){
 const failCache = {};   // 本次会话里确定取不到的，先跳过；手动「刷新」会重试
 let API_OK = null;      // 本地代理 /api/quote 是否可用（用 serve.py 跑时可用）
 let API_STATUS = "未检测";
-function proxyUrl(){
-  const p=(state.proxy||"").trim();
+function proxyBase(){
+  let p=(state.proxy||"").trim().replace(/\s+/g,"");
   if(!p) return "";
-  return p.includes("?") ? p : p.replace(/\/$/,"")+"/";
+  p=p.replace(/\/+$/,"");                    // 去掉结尾斜杠
+  p=p.replace(/\/(quote|quotes)(\?.*)?$/i,""); // 用户填了 .../quote 也能用
+  return p;
 }
+function proxyUrl(){ return proxyBase() ? proxyBase()+"/quote" : ""; }
 function withCode(base, code){
-  return base.includes("?") ? `${base}code=${encodeURIComponent(code)}`
-                            : `${base}?code=${encodeURIComponent(code)}`;
+  return (base||proxyUrl())+"?code="+encodeURIComponent(code);
 }
 function normQuote(j){
   return { price:+j.price, prev:+j.prev||0, pct:+j.pct,
@@ -548,8 +551,24 @@ async function showDiag(code){
   try{ dlgDiag.showModal(); }catch(e){}
   pre.textContent=await diagnose(code);
 }
+function isLocalHost(){
+  const h=location.hostname;
+  return h==="localhost" || h==="127.0.0.1" || h===""
+      || /^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h);
+}
 async function probeAPI(){
   const badge=$("#apiBadge");
+  if(!isLocalHost() && !proxyBase()){
+    API_OK=false; API_STATUS="页面不在本地服务上（用代理或 serve.py）";
+    if(badge){ badge.textContent="直连"; badge.style.color="var(--dim)"; }
+    return false;
+  }
+  if(!isLocalHost()){
+    // 有自建代理时不需要探测本地接口，避免 404 噪声
+    API_OK=false; API_STATUS="使用自建代理";
+    if(badge){ badge.textContent="代理"; badge.style.color="var(--green)"; }
+    return false;
+  }
   try{
     const r=await fetch("/api/ping",{cache:"no-store"});
     if(!r.ok){ API_OK=false; API_STATUS=`/api/ping 返回 ${r.status}（serve.py 是旧进程？重启一下）`; }
@@ -561,8 +580,8 @@ async function probeAPI(){
   }catch(e){
     API_OK=false; API_STATUS="连不上（页面不是 serve.py 起的）";
   }
-  if(badge) badge.textContent = API_OK ? "代理✓" : (proxyUrl()? "自建代理":"直连");
-  if(badge) badge.style.color = API_OK ? "var(--green)" : "var(--dim)";
+  if(badge) badge.textContent = API_OK ? "本地代理" : (proxyBase()? "代理":"直连");
+  if(badge) badge.style.color = API_OK ? "var(--green)" : (proxyBase()?"var(--green)":"var(--dim)");
   return API_OK;
 }
 
@@ -1051,15 +1070,13 @@ function tradingNow(){
 }
 /* 批量取数：有代理/本地接口时一次问多个代码，比逐个快一个数量级 */
 function proxyBatchUrl(){
-  const p=proxyUrl();
-  if(!p) return "";
-  return p.replace(/\/quote(\?.*)?$/,"/quotes");
+  const b=proxyBase();
+  return b ? b+"/quotes" : "";
 }
 async function fetchBatch(codes){
   const base=proxyBatchUrl();
   const url = base
-    ? (base.includes("?") ? base+"codes="+codes.join(",")
-                          : base+"?codes="+codes.join(","))
+    ? base+"?codes="+codes.map(encodeURIComponent).join(",")
     : "/api/quotes?codes="+codes.map(encodeURIComponent).join(",");
   const r=await fetch(url,{cache:"no-store"});
   if(!r.ok) throw new Error("batch-"+r.status);
@@ -1068,17 +1085,29 @@ async function fetchBatch(codes){
 }
 function canBatch(){ return !!proxyBatchUrl() || API_OK!==false; }
 
+/* 自动刷新只拉「要紧的」：回撤 + 定投里分位<5 的，监测留手动 */
+function priorityCodes(){
+  const set=new Set();
+  state.list2.forEach(it=>{ if(!NO_QUOTE.has(it.code)) set.add(it.code); });
+  state.list1.forEach(it=>{
+    const m=minPctOf(it);
+    if(m!==null && m<TRIGGER && !NO_QUOTE.has(it.code)) set.add(it.code);
+  });
+  return [...set];
+}
+
 async function refreshQuotes(scope, force){
   scope = scope || "all";
   // 定投/回撤优先，监测排在后面，避免一次拉太多把要紧的行情拖慢
   if(scope==="all"){
-    await refreshQuotes("main", force);
+    await refreshQuotes("priority", force);
     return refreshQuotes("mon", force);
   }
-  const mainItems=[...state.list1,...state.list2];
-  const monItems=state.list3;
-  const items = scope==="main" ? mainItems : monItems;
-  const codes=[...new Set(items.map(x=>x.code))];
+  const codes = scope==="mon"
+    ? [...new Set(state.list3.map(x=>x.code))]
+    : scope==="main"
+      ? [...new Set([...state.list1,...state.list2].map(x=>x.code))]
+      : priorityCodes();
   codes.filter(c=>NO_QUOTE.has(c)).forEach(c=>{ quotes[c]={err:"无行情", at:Date.now()}; });
   // 90 秒内取过的直接复用
   const todo=codes.filter(c=>!NO_QUOTE.has(c) && !(quotes[c] && quotes[c].at && Date.now()-quotes[c].at<90000));
@@ -1097,7 +1126,7 @@ async function refreshQuotes(scope, force){
   };
 
   if(canBatch() && todo.length>1){
-    const CH=12;
+    const CH=8;
     for(let i=0;i<todo.length;i+=CH){
       const chunk=todo.slice(i,i+CH);
       try{
@@ -1126,7 +1155,7 @@ async function refreshQuotes(scope, force){
   render();
   setTimeLabels();
 }
-setInterval(()=>{ if(autoOn && tradingNow()) refreshQuotes("main"); }, AUTO_MS);
+setInterval(()=>{ if(autoOn && tradingNow()) refreshQuotes("priority"); }, AUTO_MS);
 
 /* ---------- 按钮 ---------- */
 $("#toggle1").onclick=()=>{ onlyHit=!onlyHit; renderSec1(); };
@@ -1220,7 +1249,8 @@ $("#diagCopy").onclick=async ()=>{
 restoreQuoteTime();
 render();
 loadPercentiles().then(()=>render());
-probeAPI().then(()=>refreshQuotes());
+// 启动只拉「定投里分位<5 + 回撤」；监测页切过去或手动刷新时才拉
+probeAPI().then(()=>refreshQuotes("priority"));
 </script>
 </body>
 </html>
