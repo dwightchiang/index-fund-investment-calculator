@@ -204,6 +204,7 @@
     <div class="row" style="padding:12px">
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button id="btnReload">重新拉分位</button>
+        <button id="btnRetryAll">重试所有无行情</button>
         <button id="btnDiag">行情诊断</button>
         <button id="btnBulk">批量导入/改分位</button>
         <button id="btnExport">导出配置</button>
@@ -265,7 +266,8 @@
        background:#0b1220;border:1px solid var(--line);border-radius:8px;padding:10px;
        max-height:48vh;overflow:auto;-webkit-user-select:text;user-select:text"></pre>
   <div style="display:flex;gap:8px;margin-top:10px">
-    <button class="primary" id="diagCopy" style="flex:1">复制</button>
+    <button class="primary" id="diagRetry" style="flex:1">重试</button>
+    <button id="diagCopy" style="flex:1">复制</button>
     <button id="diagClose" style="flex:1">关闭</button>
   </div>
 </dialog>
@@ -524,7 +526,8 @@ async function fetchQuote(code, force){
       if(m && !m.startsWith("api-")) API_OK=false;
     }
   }
-  // 3) 浏览器直连
+  // 3) 浏览器直连：配了代理就不再走（中证/华证这些浏览器本来就拿不到，只会拖时间、刷红）
+  if(proxyBase()) { failCache[key]=true; throw new Error("无行情"); }
   const all=fetchersFor(code);
   const cached=(state.src||{})[key];
   if(cached){
@@ -545,11 +548,27 @@ async function fetchQuote(code, force){
 }
 
 const dlgDiag=$("#dlgDiag");
+let diagCode="";
 async function showDiag(code){
+  diagCode=code;
   const pre=$("#diagText");
   pre.textContent=`检测 ${code} …`;
   try{ dlgDiag.showModal(); }catch(e){}
   pre.textContent=await diagnose(code);
+}
+async function retryDiag(){
+  if(!diagCode) return;
+  const pre=$("#diagText");
+  pre.textContent=`重新拉取 ${diagCode} …`;
+  delete failCache[diagCode];
+  try{
+    const r=await fetchQuote(diagCode, true);
+    quotes[diagCode]={price:r.price, prev:r.prev, pct:r.pct, date:r.date, src:r.src, at:Date.now()};
+    render();
+    pre.textContent=`✅ 拿到数据了\n\n${JSON.stringify(r,null,2)}`;
+  }catch(e){
+    pre.textContent=`❌ 仍然失败：${e.message||e}\n\n`+await diagnose(diagCode);
+  }
 }
 function isLocalHost(){
   const h=location.hostname;
@@ -763,7 +782,7 @@ function renderSec1(){
       <div class="grid">
         <div class="nmcell">
           <span class="nm2">${it.name}</span>
-          <span class="code2">${it.code}${q?"":' · <span style="color:#f87171">无行情</span>'}</span>
+          <span class="code2">${it.code}${q?"":` · <span style="color:#f87171" data-diag="${it.code}">无行情·点我</span>`}</span>
         </div>
         <input inputmode="decimal" data-k="min" data-id="${it.id}" value="${it.min??""}" placeholder="分位">
         ${chgCell}
@@ -1195,6 +1214,14 @@ $("#btnDiag").onclick=async ()=>{
   if(!c) return;
   showDiag(c.trim().toUpperCase());
 };
+$("#btnRetryAll").onclick=async ()=>{
+  const all=[...state.list1,...state.list2,...state.list3].map(x=>x.code);
+  const bad=[...new Set(all)].filter(c=>quotes[c] && quotes[c].err);
+  if(!bad.length){ alert("现在没有无行情的指数"); return; }
+  bad.forEach(c=>delete failCache[c]);
+  alert(`重试 ${bad.length} 个…`);
+  await refreshQuotes("all", true);
+};
 $("#btnExport").onclick=()=>{
   const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
   const a=document.createElement("a");
@@ -1257,6 +1284,7 @@ function tick(){
 setInterval(tick,1000); tick();
 
 $("#diagClose").onclick=()=>dlgDiag.close();
+$("#diagRetry").onclick=retryDiag;
 $("#diagCopy").onclick=async ()=>{
   const t=$("#diagText").textContent;
   try{ await navigator.clipboard.writeText(t); alert("已复制"); }
