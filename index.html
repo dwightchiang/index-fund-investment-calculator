@@ -1066,7 +1066,8 @@ function tradingNow(){
   const d=new Date();
   if(d.getDay()===0||d.getDay()===6) return false;
   const hm=d.getHours()*100+d.getMinutes();
-  return hm>=925 && hm<=1505;
+  // 上午 9:25–11:30，下午 13:00–15:05；午休不刷
+  return (hm>=925 && hm<=1130) || (hm>=1300 && hm<=1505);
 }
 /* 批量取数：有代理/本地接口时一次问多个代码，比逐个快一个数量级 */
 function proxyBatchUrl(){
@@ -1142,6 +1143,15 @@ async function refreshQuotes(scope, force){
   }else{
     await pool(todo, 6, async c=>{
       try{ mark(c, await fetchQuote(c, force)); }catch(e){ mark(c, null); }
+    });
+  }
+
+  // 批量里失败的，隔一会儿单独重试一次（雪球偶发限流）
+  const missed=todo.filter(c=>quotes[c] && quotes[c].err);
+  if(missed.length){
+    await new Promise(r=>setTimeout(r, 700));
+    await pool(missed, 2, async c=>{
+      try{ mark(c, await fetchQuote(c, true)); }catch(e){}
     });
   }
 
@@ -1223,14 +1233,26 @@ $("#btnCopy").onclick=async ()=>{
 function tick(){
   const now=new Date();
   $("#clock").textContent=now.toLocaleTimeString("zh-CN",{hour12:false});
+  const cd=$("#countdown");
+  const day=now.getDay(), hm=now.getHours()*100+now.getMinutes();
   const close=new Date(now); close.setHours(15,0,0,0);
-  const ms=close-now, cd=$("#countdown");
-  if(ms<=0){ cd.textContent="已收盘"; cd.style.color="var(--gray)"; }
-  else{
+
+  let txt="", color="var(--dim)";
+  if(day===0||day===6){ txt="周末"; }
+  else if(hm<915){ txt="未开盘"; color="var(--gray)"; }
+  else if(hm<930){ txt="集合竞价"; color="var(--amber)"; }
+  else if(hm<=1130){ txt="交易中"; }
+  else if(hm<1300){ txt="午间休市"; color="var(--gray)"; }
+  else if(hm<1430){ txt="交易中"; }
+  else if(hm<1500){                        // 只有最后半小时才显示倒计时
+    const ms=close-now;
     const m=Math.floor(ms/60000), s=Math.floor(ms%60000/1000);
-    cd.textContent=`距收盘 ${m}:${String(s).padStart(2,"0")}`;
-    cd.style.color = ms<20*60000?"var(--amber)":"var(--dim)";
+    txt=`距收盘 ${m}:${String(s).padStart(2,"0")}`;
+    color = ms<20*60000 ? "var(--amber)" : "var(--dim)";
   }
+  else { txt="已收盘"; color="var(--gray)"; }
+  cd.textContent=txt;
+  cd.style.color=color;
 }
 setInterval(tick,1000); tick();
 
