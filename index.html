@@ -477,6 +477,14 @@ function fetchersFor(code){
 const failCache = {};   // 本次会话里确定取不到的，先跳过；手动「刷新」会重试
 let API_OK = null;      // 本地代理 /api/quote 是否可用（用 serve.py 跑时可用）
 let API_STATUS = "未检测";
+let proxyDownUntil = 0; // 代理连不上时，一段时间内不再尝试（避免每次卡 20 秒）
+const PROXY_COOL = 5*60*1000;
+
+function fetchWithTimeout(url, ms=8000){
+  const ctl = new AbortController();
+  const t = setTimeout(()=>ctl.abort(), ms);
+  return fetch(url, {cache:"no-store", signal:ctl.signal}).finally(()=>clearTimeout(t));
+}
 function proxyBase(){
   let p=(state.proxy||"").trim().replace(/\s+/g,"");
   if(!p) return "";
@@ -485,6 +493,7 @@ function proxyBase(){
   return p;
 }
 function proxyUrl(){ return proxyBase() ? proxyBase()+"/quote" : ""; }
+function proxyUsable(){ return !!proxyBase() && Date.now() > proxyDownUntil; }
 function withCode(base, code){
   return (base||proxyUrl())+"?code="+encodeURIComponent(code);
 }
@@ -493,14 +502,14 @@ function normQuote(j){
            date:String(j.date||"").replace(/-/g,""), src:(j.src||"代理")+"·代理" };
 }
 async function fetchViaProxy(code){
-  const r=await fetch(withCode(proxyUrl(), code), {cache:"no-store"});
+  const r = await fetchWithTimeout(withCode(proxyUrl(), code), 8000);
   if(!r.ok) throw new Error("proxy-"+r.status);
-  const j=await r.json();
+  const j = await r.json();
   if(j.error) throw new Error("proxy-"+j.error);
   return normQuote(j);
 }
 async function fetchAPI(code){
-  const r = await fetch("/api/quote?code="+encodeURIComponent(code), {cache:"no-store"});
+  const r = await fetchWithTimeout("/api/quote?code="+encodeURIComponent(code), 15000);
   if(!r.ok) throw new Error("api-"+r.status);
   const j = await r.json();
   if(j.error) throw new Error("api-"+j.error);
@@ -509,10 +518,14 @@ async function fetchAPI(code){
 async function fetchQuote(code, force){
   const key=String(code).trim().toUpperCase();
   if(!force && failCache[key]) throw new Error("无行情");
-  // 1) 自建代理（Cloudflare Worker / 自己的服务器），手机上也能用
-  if(proxyUrl()){
+  // 1) 自建代理（Cloudflare Worker / 自己的服务器）
+  if(proxyUsable()){
     try{ const r=await fetchViaProxy(key); delete failCache[key]; return r; }
-    catch(e){ /* 落到本地代理 */ }
+    catch(e){
+      const m=String(e.message||"");
+      // 网络层挂了（连不上/超时）→ 冷却 5 分钟；业务 404 不冷却
+      if(!m.startsWith("proxy-")) proxyDownUntil = Date.now()+PROXY_COOL;
+    }
   }
   // 2) 本地代理（serve.py 提供）
   if(API_OK !== false){
@@ -526,8 +539,7 @@ async function fetchQuote(code, force){
       if(m && !m.startsWith("api-")) API_OK=false;
     }
   }
-  // 3) 浏览器直连：配了代理就不再走（中证/华证这些浏览器本来就拿不到，只会拖时间、刷红）
-  if(proxyBase()) { failCache[key]=true; throw new Error("无行情"); }
+  // 3) 浏览器直连（兜底，东财/腾讯/同花顺的 JSONP 不受 CORS 限制）
   const all=fetchersFor(code);
   const cached=(state.src||{})[key];
   if(cached){
@@ -577,19 +589,29 @@ function isLocalHost(){
 }
 async function probeAPI(){
   const badge=$("#apiBadge");
-  if(!isLocalHost() && !proxyBase()){
-    API_OK=false; API_STATUS="页面不在本地服务上（用代理或 serve.py）";
-    if(badge){ badge.textContent="直连"; badge.style.color="var(--dim)"; }
-    return false;
+  const setBadge=(txt,color)=>{ if(badge){ badge.textContent=txt; badge.style.color=color; } };
+
+  // 配了自建代理：先快速探一次，不通就直接冷却，别让后面每个请求都卡 8 秒
+  if(proxyBase()){
+    try{
+      const r=await fetchWithTimeout(proxyBase()+"/ping", 4000);
+      const j=await r.json();
+      if(j && j.ok){ proxyDownUntil=0; setBadge("代理在线","var(--green)"); }
+      else throw new Error("bad ping");
+    }catch(e){
+      proxyDownUntil=Date.now()+PROXY_COOL;
+      setBadge("代理离线·直连","var(--amber)");
+    }
   }
+
   if(!isLocalHost()){
-    // 有自建代理时不需要探测本地接口，避免 404 噪声
-    API_OK=false; API_STATUS="使用自建代理";
-    if(badge){ badge.textContent="代理"; badge.style.color="var(--green)"; }
+    API_OK=false;
+    API_STATUS = proxyBase() ? "使用自建代理" : "页面不在本地服务上";
+    if(!proxyBase()) setBadge("直连","var(--dim)");
     return false;
   }
   try{
-    const r=await fetch("/api/ping",{cache:"no-store"});
+    const r=await fetchWithTimeout("/api/ping", 5000);
     if(!r.ok){ API_OK=false; API_STATUS=`/api/ping 返回 ${r.status}（serve.py 是旧进程？重启一下）`; }
     else{
       const j=await r.json();
@@ -599,8 +621,8 @@ async function probeAPI(){
   }catch(e){
     API_OK=false; API_STATUS="连不上（页面不是 serve.py 起的）";
   }
-  if(badge) badge.textContent = API_OK ? "本地代理" : (proxyBase()? "代理":"直连");
-  if(badge) badge.style.color = API_OK ? "var(--green)" : (proxyBase()?"var(--green)":"var(--dim)");
+  if(API_OK) setBadge("本地代理","var(--green)");
+  else if(!proxyBase()) setBadge("直连","var(--dim)");
   return API_OK;
 }
 
@@ -1098,12 +1120,13 @@ async function fetchBatch(codes){
   const url = base
     ? base+"?codes="+codes.map(encodeURIComponent).join(",")
     : "/api/quotes?codes="+codes.map(encodeURIComponent).join(",");
-  const r=await fetch(url,{cache:"no-store"});
+  const r = await fetchWithTimeout(url, base?15000:20000);
   if(!r.ok) throw new Error("batch-"+r.status);
   const j=await r.json();
   return j.items||{};
 }
-function canBatch(){ return !!proxyBatchUrl() || API_OK!==false; }
+/* 批量只在代理/本地接口可用时走；代理挂了就别试，直接逐个走浏览器 */
+function canBatch(){ return proxyUsable() || API_OK!==false; }
 
 /* 自动刷新只拉「要紧的」：回撤 + 定投里分位<5 的，监测留手动 */
 function priorityCodes(){
