@@ -209,6 +209,7 @@
         <button id="btnBulk">批量导入/改分位</button>
         <button id="btnExport">导出配置</button>
         <button id="btnImport">导入配置</button>
+        <button id="btnSync">跨设备同步</button>
         <button id="btnReset" class="ghost">恢复默认</button>
         <button id="btnAuto">自动刷新：盘中</button>
       </div>
@@ -269,6 +270,23 @@
     <button class="primary" id="diagRetry" style="flex:1">重试</button>
     <button id="diagCopy" style="flex:1">复制</button>
     <button id="diagClose" style="flex:1">关闭</button>
+  </div>
+</dialog>
+
+<dialog id="dlgSync">
+  <h3 style="margin:0 0 8px;font-size:15px">跨设备同步</h3>
+  <p class="note" style="margin:0 0 6px">把下面这串码发到另一台设备（微信/备忘录都行），在那边点「粘贴同步码」导入。</p>
+  <textarea id="syncOut" readonly style="height:110px"></textarea>
+  <div style="display:flex;gap:8px;margin-top:8px">
+    <button class="primary" id="syncCopy" style="flex:1">复制同步码</button>
+    <button id="syncCopyLink" style="flex:1">复制链接</button>
+  </div>
+  <hr style="border:none;border-top:1px solid #334155;margin:14px 0">
+  <p class="note" style="margin:0 0 6px">从另一台设备拿到的码，粘在这里导入（会覆盖当前配置）：</p>
+  <textarea id="syncIn" placeholder="在这粘贴同步码…" style="height:80px"></textarea>
+  <div style="display:flex;gap:8px;margin-top:8px">
+    <button class="primary" id="syncDo" style="flex:1">导入</button>
+    <button id="syncClose" style="flex:1">关闭</button>
   </div>
 </dialog>
 
@@ -1209,6 +1227,86 @@ async function refreshQuotes(scope, force){
 }
 setInterval(()=>{ if(autoOn && tradingNow()) refreshQuotes("priority"); }, AUTO_MS);
 
+/* ---------- 跨设备同步码 ---------- */
+function b64enc(str){
+  const bytes=new TextEncoder().encode(str);
+  let bin="";
+  for(const b of bytes) bin+=String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+}
+function b64dec(s){
+  s=String(s).trim().replace(/-/g,"+").replace(/_/g,"/");
+  while(s.length%4) s+="=";
+  const bin=atob(s);
+  const bytes=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+function packState(){
+  const o={
+    v:1,
+    l1:state.list1.map(x=>[x.name,x.code,x.min??"",x.unit??10,x.pe??"",x.pb??"",x.mpct??""]),
+    l2:state.list2.map(x=>[x.name,x.code,x.high??"",x.unit??1,x.manual??""]),
+    l3:state.list3.map(x=>[x.name,x.code,x.pe??"",x.pb??""])
+  };
+  if(state.proxy)  o.px=state.proxy;
+  if(state.pctUrl) o.pu=state.pctUrl;
+  return o;
+}
+function unpackState(o){
+  return {
+    seedVer: SEED_VER,
+    list1:(o.l1||[]).map((a,i)=>({id:"y1-"+i, name:a[0], code:a[1], min:a[2]??"", unit:a[3]??10, pe:a[4]??"", pb:a[5]??"", mpct:a[6]??""})),
+    list2:(o.l2||[]).map((a,i)=>({id:"y2-"+i, name:a[0], code:a[1], high:a[2]??"", unit:a[3]??1, manual:a[4]??""})),
+    list3:(o.l3||[]).map((a,i)=>({id:"y3-"+i, name:a[0], code:a[1], min:"", unit:10, pe:a[2]??"", pb:a[3]??"", mpct:""})),
+    proxy:o.px||"", pctUrl:o.pu||"", last:{}, src:{}
+  };
+}
+function makeSyncCode(){ return b64enc(JSON.stringify(packState())); }
+function applySync(text){
+  let o;
+  try{ o=JSON.parse(b64dec(text)); }
+  catch(e){ alert("同步码无效，检查是否粘全"); return false; }
+  if(!o || !o.l1){ alert("同步码内容不对"); return false; }
+  state=unpackState(o);
+  save(); render();
+  $("#proxyInput").value=state.proxy||"";
+  $("#pctUrlInput").value=state.pctUrl||"";
+  probeAPI().then(()=>refreshQuotes("all", true));
+  return true;
+}
+const dlgSync=$("#dlgSync");
+$("#btnSync").onclick=()=>{
+  $("#syncOut").value=makeSyncCode();
+  $("#syncIn").value="";
+  try{ dlgSync.showModal(); }catch(e){}
+};
+$("#syncClose").onclick=()=>dlgSync.close();
+$("#syncCopy").onclick=async ()=>{
+  try{ await navigator.clipboard.writeText($("#syncOut").value); alert("同步码已复制"); }
+  catch(e){ $("#syncOut").select(); alert("已选中，请长按复制"); }
+};
+$("#syncCopyLink").onclick=async ()=>{
+  const link=location.origin+location.pathname+"#sync="+makeSyncCode();
+  try{ await navigator.clipboard.writeText(link); alert("链接已复制（很长，微信可能折叠，建议用同步码）"); }
+  catch(e){ alert(link); }
+};
+$("#syncDo").onclick=()=>{
+  const t=$("#syncIn").value.trim();
+  if(!t){ alert("先粘贴同步码"); return; }
+  if(!confirm("导入会覆盖当前配置（含已填分位），确定？")) return;
+  if(applySync(t)){ dlgSync.close(); alert("已导入"); }
+};
+/* 打开带 #sync= 的链接时提示导入 */
+function checkHashSync(){
+  const m=location.hash.match(/[#&]sync=([^&]+)/);
+  if(!m) return;
+  if(confirm("检测到同步链接，导入这份配置？\n（会覆盖当前设置）")){
+    applySync(decodeURIComponent(m[1]));
+  }
+  history.replaceState(null,"",location.pathname+location.search);
+}
+
 /* ---------- 按钮 ---------- */
 $("#toggle1").onclick=()=>{ onlyHit=!onlyHit; renderSec1(); };
 $("#btnRefresh").onclick=async ()=>{
@@ -1322,6 +1420,7 @@ $("#diagCopy").onclick=async ()=>{
 restoreQuoteTime();
 render();
 loadPercentiles().then(()=>render());
+checkHashSync();
 // 启动只拉「定投里分位<5 + 回撤」；监测页切过去或手动刷新时才拉
 probeAPI().then(()=>refreshQuotes("priority"));
 </script>
