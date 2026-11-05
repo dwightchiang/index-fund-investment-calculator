@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0f172a">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📈</text></svg>">
 <title>指数定投计算器</title>
 <style>
   :root{
@@ -204,12 +203,10 @@
     <div class="row" style="padding:12px">
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button id="btnReload">重新拉分位</button>
-        <button id="btnRetryAll">重试所有无行情</button>
         <button id="btnDiag">行情诊断</button>
         <button id="btnBulk">批量导入/改分位</button>
         <button id="btnExport">导出配置</button>
         <button id="btnImport">导入配置</button>
-        <button id="btnSync">跨设备同步</button>
         <button id="btnReset" class="ghost">恢复默认</button>
         <button id="btnAuto">自动刷新：盘中</button>
       </div>
@@ -267,26 +264,8 @@
        background:#0b1220;border:1px solid var(--line);border-radius:8px;padding:10px;
        max-height:48vh;overflow:auto;-webkit-user-select:text;user-select:text"></pre>
   <div style="display:flex;gap:8px;margin-top:10px">
-    <button class="primary" id="diagRetry" style="flex:1">重试</button>
-    <button id="diagCopy" style="flex:1">复制</button>
+    <button class="primary" id="diagCopy" style="flex:1">复制</button>
     <button id="diagClose" style="flex:1">关闭</button>
-  </div>
-</dialog>
-
-<dialog id="dlgSync">
-  <h3 style="margin:0 0 8px;font-size:15px">跨设备同步</h3>
-  <p class="note" style="margin:0 0 6px">把下面这串码发到另一台设备（微信/备忘录都行），在那边点「粘贴同步码」导入。</p>
-  <textarea id="syncOut" readonly style="height:110px"></textarea>
-  <div style="display:flex;gap:8px;margin-top:8px">
-    <button class="primary" id="syncCopy" style="flex:1">复制同步码</button>
-    <button id="syncCopyLink" style="flex:1">复制链接</button>
-  </div>
-  <hr style="border:none;border-top:1px solid #334155;margin:14px 0">
-  <p class="note" style="margin:0 0 6px">从另一台设备拿到的码，粘在这里导入（会覆盖当前配置）：</p>
-  <textarea id="syncIn" placeholder="在这粘贴同步码…" style="height:80px"></textarea>
-  <div style="display:flex;gap:8px;margin-top:8px">
-    <button class="primary" id="syncDo" style="flex:1">导入</button>
-    <button id="syncClose" style="flex:1">关闭</button>
   </div>
 </dialog>
 
@@ -495,39 +474,28 @@ function fetchersFor(code){
 const failCache = {};   // 本次会话里确定取不到的，先跳过；手动「刷新」会重试
 let API_OK = null;      // 本地代理 /api/quote 是否可用（用 serve.py 跑时可用）
 let API_STATUS = "未检测";
-let proxyDownUntil = 0; // 代理连不上时，一段时间内不再尝试（避免每次卡 20 秒）
-const PROXY_COOL = 5*60*1000;
-
-function fetchWithTimeout(url, ms=8000){
-  const ctl = new AbortController();
-  const t = setTimeout(()=>ctl.abort(), ms);
-  return fetch(url, {cache:"no-store", signal:ctl.signal}).finally(()=>clearTimeout(t));
-}
-function proxyBase(){
-  let p=(state.proxy||"").trim().replace(/\s+/g,"");
+function proxyUrl(){
+  const p=(state.proxy||"").trim();
   if(!p) return "";
-  p=p.replace(/\/+$/,"");                    // 去掉结尾斜杠
-  p=p.replace(/\/(quote|quotes)(\?.*)?$/i,""); // 用户填了 .../quote 也能用
-  return p;
+  return p.includes("?") ? p : p.replace(/\/$/,"")+"/";
 }
-function proxyUrl(){ return proxyBase() ? proxyBase()+"/quote" : ""; }
-function proxyUsable(){ return !!proxyBase() && Date.now() > proxyDownUntil; }
 function withCode(base, code){
-  return (base||proxyUrl())+"?code="+encodeURIComponent(code);
+  return base.includes("?") ? `${base}code=${encodeURIComponent(code)}`
+                            : `${base}?code=${encodeURIComponent(code)}`;
 }
 function normQuote(j){
   return { price:+j.price, prev:+j.prev||0, pct:+j.pct,
            date:String(j.date||"").replace(/-/g,""), src:(j.src||"代理")+"·代理" };
 }
 async function fetchViaProxy(code){
-  const r = await fetchWithTimeout(withCode(proxyUrl(), code), 8000);
+  const r=await fetch(withCode(proxyUrl(), code), {cache:"no-store"});
   if(!r.ok) throw new Error("proxy-"+r.status);
-  const j = await r.json();
+  const j=await r.json();
   if(j.error) throw new Error("proxy-"+j.error);
   return normQuote(j);
 }
 async function fetchAPI(code){
-  const r = await fetchWithTimeout("/api/quote?code="+encodeURIComponent(code), 15000);
+  const r = await fetch("/api/quote?code="+encodeURIComponent(code), {cache:"no-store"});
   if(!r.ok) throw new Error("api-"+r.status);
   const j = await r.json();
   if(j.error) throw new Error("api-"+j.error);
@@ -536,14 +504,10 @@ async function fetchAPI(code){
 async function fetchQuote(code, force){
   const key=String(code).trim().toUpperCase();
   if(!force && failCache[key]) throw new Error("无行情");
-  // 1) 自建代理（Cloudflare Worker / 自己的服务器）
-  if(proxyUsable()){
+  // 1) 自建代理（Cloudflare Worker / 自己的服务器），手机上也能用
+  if(proxyUrl()){
     try{ const r=await fetchViaProxy(key); delete failCache[key]; return r; }
-    catch(e){
-      const m=String(e.message||"");
-      // 网络层挂了（连不上/超时）→ 冷却 5 分钟；业务 404 不冷却
-      if(!m.startsWith("proxy-")) proxyDownUntil = Date.now()+PROXY_COOL;
-    }
+    catch(e){ /* 落到本地代理 */ }
   }
   // 2) 本地代理（serve.py 提供）
   if(API_OK !== false){
@@ -557,7 +521,7 @@ async function fetchQuote(code, force){
       if(m && !m.startsWith("api-")) API_OK=false;
     }
   }
-  // 3) 浏览器直连（兜底，东财/腾讯/同花顺的 JSONP 不受 CORS 限制）
+  // 3) 浏览器直连
   const all=fetchersFor(code);
   const cached=(state.src||{})[key];
   if(cached){
@@ -578,58 +542,16 @@ async function fetchQuote(code, force){
 }
 
 const dlgDiag=$("#dlgDiag");
-let diagCode="";
 async function showDiag(code){
-  diagCode=code;
   const pre=$("#diagText");
   pre.textContent=`检测 ${code} …`;
   try{ dlgDiag.showModal(); }catch(e){}
   pre.textContent=await diagnose(code);
 }
-async function retryDiag(){
-  if(!diagCode) return;
-  const pre=$("#diagText");
-  pre.textContent=`重新拉取 ${diagCode} …`;
-  delete failCache[diagCode];
-  try{
-    const r=await fetchQuote(diagCode, true);
-    quotes[diagCode]={price:r.price, prev:r.prev, pct:r.pct, date:r.date, src:r.src, at:Date.now()};
-    render();
-    pre.textContent=`✅ 拿到数据了\n\n${JSON.stringify(r,null,2)}`;
-  }catch(e){
-    pre.textContent=`❌ 仍然失败：${e.message||e}\n\n`+await diagnose(diagCode);
-  }
-}
-function isLocalHost(){
-  const h=location.hostname;
-  return h==="localhost" || h==="127.0.0.1" || h===""
-      || /^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h);
-}
 async function probeAPI(){
   const badge=$("#apiBadge");
-  const setBadge=(txt,color)=>{ if(badge){ badge.textContent=txt; badge.style.color=color; } };
-
-  // 配了自建代理：先快速探一次，不通就直接冷却，别让后面每个请求都卡 8 秒
-  if(proxyBase()){
-    try{
-      const r=await fetchWithTimeout(proxyBase()+"/ping", 4000);
-      const j=await r.json();
-      if(j && j.ok){ proxyDownUntil=0; setBadge("代理在线","var(--green)"); }
-      else throw new Error("bad ping");
-    }catch(e){
-      proxyDownUntil=Date.now()+PROXY_COOL;
-      setBadge("代理离线·直连","var(--amber)");
-    }
-  }
-
-  if(!isLocalHost()){
-    API_OK=false;
-    API_STATUS = proxyBase() ? "使用自建代理" : "页面不在本地服务上";
-    if(!proxyBase()) setBadge("直连","var(--dim)");
-    return false;
-  }
   try{
-    const r=await fetchWithTimeout("/api/ping", 5000);
+    const r=await fetch("/api/ping",{cache:"no-store"});
     if(!r.ok){ API_OK=false; API_STATUS=`/api/ping 返回 ${r.status}（serve.py 是旧进程？重启一下）`; }
     else{
       const j=await r.json();
@@ -639,8 +561,8 @@ async function probeAPI(){
   }catch(e){
     API_OK=false; API_STATUS="连不上（页面不是 serve.py 起的）";
   }
-  if(API_OK) setBadge("本地代理","var(--green)");
-  else if(!proxyBase()) setBadge("直连","var(--dim)");
+  if(badge) badge.textContent = API_OK ? "代理✓" : (proxyUrl()? "自建代理":"直连");
+  if(badge) badge.style.color = API_OK ? "var(--green)" : "var(--dim)";
   return API_OK;
 }
 
@@ -690,19 +612,9 @@ async function loadPercentiles(force){
     }catch(e){}
   }
   try{
-    // 依次尝试：自定义地址 → data/percentiles.json → 根目录 percentiles.json
-    const urls = (state.pctUrl||"").trim()
-      ? [(state.pctUrl||"").trim()]
-      : ["data/percentiles.json", "percentiles.json"];
-    let r = null, lastErr = null;
-    for(const u of urls){
-      try{
-        const rr = await fetch(u+(u.includes("?")?"&":"?")+"_="+Date.now(), {cache:"no-store"});
-        if(rr.ok){ r = rr; break; }
-        lastErr = "HTTP "+rr.status;
-      }catch(e){ lastErr = e.message; }
-    }
-    if(!r) throw new Error(lastErr||"not found");
+    const src=(state.pctUrl||"").trim() || "data/percentiles.json";
+    const r=await fetch(src+(src.includes("?")?"&":"?")+"_="+Date.now(), {cache:"no-store"});
+    if(!r.ok) throw new Error("HTTP "+r.status);
     const j=await r.json();
     if(j && j.items){
       AUTO=j;
@@ -779,11 +691,7 @@ function calc2(it){
 function chipClass(v){ return v===null?"empty":v<TRIGGER?"hit":v<NEAR?"near":"off"; }
 /* 金额显示：负数原样显示，未填分位/无行情显示 — */
 function amtView(r){
-  if(r.tag==="na"){
-    // 已填分位但没行情 → 提示去填涨跌，而不是显示「—」
-    return r.min===null ? { txt:"—", cls:"zero" } : { txt:"待填", cls:"zero" };
-  }
-  if(r.tag==="near" || r.tag==="off" || r.min===null || r.amount===undefined)
+  if(r.tag==="na" || r.tag==="near" || r.tag==="off" || r.min===null || r.amount===undefined)
     return { txt:"—", cls:"zero" };
   const v=r.amount;
   if(v===0) return { txt:"¥0", cls:"zero" };
@@ -822,7 +730,7 @@ function renderSec1(){
       <div class="grid">
         <div class="nmcell">
           <span class="nm2">${it.name}</span>
-          <span class="code2">${it.code}${q?"":` · <span style="color:#f87171" data-diag="${it.code}">无行情·点我</span>`}</span>
+          <span class="code2">${it.code}${q?"":' · <span style="color:#f87171">无行情</span>'}</span>
         </div>
         <input inputmode="decimal" data-k="min" data-id="${it.id}" value="${it.min??""}" placeholder="分位">
         ${chgCell}
@@ -1125,96 +1033,30 @@ function tradingNow(){
   const d=new Date();
   if(d.getDay()===0||d.getDay()===6) return false;
   const hm=d.getHours()*100+d.getMinutes();
-  // 上午 9:25–11:30，下午 13:00–15:05；午休不刷
-  return (hm>=925 && hm<=1130) || (hm>=1300 && hm<=1505);
+  return hm>=925 && hm<=1505;
 }
-/* 批量取数：有代理/本地接口时一次问多个代码，比逐个快一个数量级 */
-function proxyBatchUrl(){
-  const b=proxyBase();
-  return b ? b+"/quotes" : "";
-}
-async function fetchBatch(codes){
-  const base=proxyBatchUrl();
-  const url = base
-    ? base+"?codes="+codes.map(encodeURIComponent).join(",")
-    : "/api/quotes?codes="+codes.map(encodeURIComponent).join(",");
-  const r = await fetchWithTimeout(url, base?15000:20000);
-  if(!r.ok) throw new Error("batch-"+r.status);
-  const j=await r.json();
-  return j.items||{};
-}
-/* 批量只在代理/本地接口可用时走；代理挂了就别试，直接逐个走浏览器 */
-function canBatch(){ return proxyUsable() || API_OK!==false; }
-
-/* 自动刷新只拉「要紧的」：回撤 + 定投里分位<5 的，监测留手动 */
-function priorityCodes(){
-  const set=new Set();
-  state.list2.forEach(it=>{ if(!NO_QUOTE.has(it.code)) set.add(it.code); });
-  state.list1.forEach(it=>{
-    const m=minPctOf(it);
-    if(m!==null && m<TRIGGER && !NO_QUOTE.has(it.code)) set.add(it.code);
-  });
-  return [...set];
-}
-
 async function refreshQuotes(scope, force){
   scope = scope || "all";
   // 定投/回撤优先，监测排在后面，避免一次拉太多把要紧的行情拖慢
   if(scope==="all"){
-    await refreshQuotes("priority", force);
+    await refreshQuotes("main", force);
     return refreshQuotes("mon", force);
   }
-  const codes = scope==="mon"
-    ? [...new Set(state.list3.map(x=>x.code))]
-    : scope==="main"
-      ? [...new Set([...state.list1,...state.list2].map(x=>x.code))]
-      : priorityCodes();
+  const mainItems=[...state.list1,...state.list2];
+  const monItems=state.list3;
+  const items = scope==="main" ? mainItems : monItems;
+  const codes=[...new Set(items.map(x=>x.code))];
   codes.filter(c=>NO_QUOTE.has(c)).forEach(c=>{ quotes[c]={err:"无行情", at:Date.now()}; });
-  // 90 秒内取过的直接复用
+  // 90 秒内取过的直接复用，避免切页签、反复点刷新时重复请求
   const todo=codes.filter(c=>!NO_QUOTE.has(c) && !(quotes[c] && quotes[c].at && Date.now()-quotes[c].at<90000));
   $("#status").textContent = todo.length ? `刷新 0/${todo.length}` : "用缓存";
-
   let done=0;
-  const mark=(c,got)=>{
-    if(got && !got.error && got.price>0){
-      quotes[c]={price:+got.price, prev:+got.prev||0, pct:+got.pct, date:String(got.date||"").replace(/-/g,""),
-                 src:got.src||"代理", at:Date.now()};
-      delete failCache[c];
-    }else{
-      quotes[c]={err:"无行情", at:Date.now()};
-    }
+  await pool(todo, 6, async c=>{
+    try{ quotes[c]=await fetchQuote(c, force); }
+    catch(e){ quotes[c]={err:"无行情"}; }
+    quotes[c].at=Date.now();
     done++; $("#status").textContent=`刷新 ${done}/${todo.length}`;
-  };
-
-  if(canBatch() && todo.length>1){
-    const CH=8;
-    for(let i=0;i<todo.length;i+=CH){
-      const chunk=todo.slice(i,i+CH);
-      try{
-        const got=await fetchBatch(chunk);
-        chunk.forEach(c=>mark(c, got[c]));
-      }catch(e){
-        // 批量失败就退回逐个
-        await pool(chunk, 4, async c=>{
-          try{ mark(c, await fetchQuote(c, force)); }catch(err){ mark(c, null); }
-        });
-      }
-    }
-  }else{
-    await pool(todo, 6, async c=>{
-      try{ mark(c, await fetchQuote(c, force)); }catch(e){ mark(c, null); }
-    });
-  }
-
-  // 批量里失败的，隔一会儿单独重试一次（雪球偶发限流）
-  const missed=todo.filter(c=>quotes[c] && quotes[c].err);
-  if(missed.length){
-    await new Promise(r=>setTimeout(r, 700));
-    await pool(missed, 2, async c=>{
-      try{ mark(c, await fetchQuote(c, true)); }catch(e){}
-    });
-  }
-
+  });
   if(scope!=="mon") lastMainAt=Date.now();
   if(scope!=="main") lastMonAt=Date.now();
   try{ localStorage.setItem(QTS, JSON.stringify({main:lastMainAt, mon:lastMonAt})); }catch(e){}
@@ -1225,87 +1067,7 @@ async function refreshQuotes(scope, force){
   render();
   setTimeLabels();
 }
-setInterval(()=>{ if(autoOn && tradingNow()) refreshQuotes("priority"); }, AUTO_MS);
-
-/* ---------- 跨设备同步码 ---------- */
-function b64enc(str){
-  const bytes=new TextEncoder().encode(str);
-  let bin="";
-  for(const b of bytes) bin+=String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
-}
-function b64dec(s){
-  s=String(s).trim().replace(/-/g,"+").replace(/_/g,"/");
-  while(s.length%4) s+="=";
-  const bin=atob(s);
-  const bytes=new Uint8Array(bin.length);
-  for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
-  return new TextDecoder().decode(bytes);
-}
-function packState(){
-  const o={
-    v:1,
-    l1:state.list1.map(x=>[x.name,x.code,x.min??"",x.unit??10,x.pe??"",x.pb??"",x.mpct??""]),
-    l2:state.list2.map(x=>[x.name,x.code,x.high??"",x.unit??1,x.manual??""]),
-    l3:state.list3.map(x=>[x.name,x.code,x.pe??"",x.pb??""])
-  };
-  if(state.proxy)  o.px=state.proxy;
-  if(state.pctUrl) o.pu=state.pctUrl;
-  return o;
-}
-function unpackState(o){
-  return {
-    seedVer: SEED_VER,
-    list1:(o.l1||[]).map((a,i)=>({id:"y1-"+i, name:a[0], code:a[1], min:a[2]??"", unit:a[3]??10, pe:a[4]??"", pb:a[5]??"", mpct:a[6]??""})),
-    list2:(o.l2||[]).map((a,i)=>({id:"y2-"+i, name:a[0], code:a[1], high:a[2]??"", unit:a[3]??1, manual:a[4]??""})),
-    list3:(o.l3||[]).map((a,i)=>({id:"y3-"+i, name:a[0], code:a[1], min:"", unit:10, pe:a[2]??"", pb:a[3]??"", mpct:""})),
-    proxy:o.px||"", pctUrl:o.pu||"", last:{}, src:{}
-  };
-}
-function makeSyncCode(){ return b64enc(JSON.stringify(packState())); }
-function applySync(text){
-  let o;
-  try{ o=JSON.parse(b64dec(text)); }
-  catch(e){ alert("同步码无效，检查是否粘全"); return false; }
-  if(!o || !o.l1){ alert("同步码内容不对"); return false; }
-  state=unpackState(o);
-  save(); render();
-  $("#proxyInput").value=state.proxy||"";
-  $("#pctUrlInput").value=state.pctUrl||"";
-  probeAPI().then(()=>refreshQuotes("all", true));
-  return true;
-}
-const dlgSync=$("#dlgSync");
-$("#btnSync").onclick=()=>{
-  $("#syncOut").value=makeSyncCode();
-  $("#syncIn").value="";
-  try{ dlgSync.showModal(); }catch(e){}
-};
-$("#syncClose").onclick=()=>dlgSync.close();
-$("#syncCopy").onclick=async ()=>{
-  try{ await navigator.clipboard.writeText($("#syncOut").value); alert("同步码已复制"); }
-  catch(e){ $("#syncOut").select(); alert("已选中，请长按复制"); }
-};
-$("#syncCopyLink").onclick=async ()=>{
-  const link=location.origin+location.pathname+"#sync="+makeSyncCode();
-  try{ await navigator.clipboard.writeText(link); alert("链接已复制（很长，微信可能折叠，建议用同步码）"); }
-  catch(e){ alert(link); }
-};
-$("#syncDo").onclick=()=>{
-  const t=$("#syncIn").value.trim();
-  if(!t){ alert("先粘贴同步码"); return; }
-  if(!confirm("导入会覆盖当前配置（含已填分位），确定？")) return;
-  if(applySync(t)){ dlgSync.close(); alert("已导入"); }
-};
-/* 打开带 #sync= 的链接时提示导入 */
-function checkHashSync(){
-  const m=location.hash.match(/[#&]sync=([^&]+)/);
-  if(!m) return;
-  if(confirm("检测到同步链接，导入这份配置？\n（会覆盖当前设置）")){
-    applySync(decodeURIComponent(m[1]));
-  }
-  history.replaceState(null,"",location.pathname+location.search);
-}
+setInterval(()=>{ if(autoOn && tradingNow()) refreshQuotes("main"); }, AUTO_MS);
 
 /* ---------- 按钮 ---------- */
 $("#toggle1").onclick=()=>{ onlyHit=!onlyHit; renderSec1(); };
@@ -1315,15 +1077,6 @@ $("#btnRefresh").onclick=async ()=>{
 };
 $("#btnReload").onclick=async ()=>{ const ok=await loadPercentiles(true); render(); alert(ok?"分位已更新":"没读到数据文件（本地打开时正常）"); };
 $("#proxyInput").value = state.proxy || "";
-$("#pctUrlInput").value = state.pctUrl || "";
-$("#btnPctUrlSave").onclick=async ()=>{
-  state.pctUrl = ($("#pctUrlInput").value||"").trim();
-  save();
-  try{ localStorage.removeItem("dca-pct-cache"); }catch(e){}
-  const ok = await loadPercentiles(true);
-  render();
-  alert(ok ? "分位地址已保存，数据已更新" : "保存了，但没读到数据（检查地址能不能打开）");
-};
 $("#btnProxySave").onclick=()=>{
   state.proxy = ($("#proxyInput").value||"").trim();
   save();
@@ -1334,14 +1087,6 @@ $("#btnDiag").onclick=async ()=>{
   const c=prompt("要诊断的代码（如 931139 / H30269 / KWEB）","931139");
   if(!c) return;
   showDiag(c.trim().toUpperCase());
-};
-$("#btnRetryAll").onclick=async ()=>{
-  const all=[...state.list1,...state.list2,...state.list3].map(x=>x.code);
-  const bad=[...new Set(all)].filter(c=>quotes[c] && quotes[c].err);
-  if(!bad.length){ alert("现在没有无行情的指数"); return; }
-  bad.forEach(c=>delete failCache[c]);
-  alert(`重试 ${bad.length} 个…`);
-  await refreshQuotes("all", true);
 };
 $("#btnExport").onclick=()=>{
   const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
@@ -1381,31 +1126,18 @@ $("#btnCopy").onclick=async ()=>{
 function tick(){
   const now=new Date();
   $("#clock").textContent=now.toLocaleTimeString("zh-CN",{hour12:false});
-  const cd=$("#countdown");
-  const day=now.getDay(), hm=now.getHours()*100+now.getMinutes();
   const close=new Date(now); close.setHours(15,0,0,0);
-
-  let txt="", color="var(--dim)";
-  if(day===0||day===6){ txt="周末"; }
-  else if(hm<915){ txt="未开盘"; color="var(--gray)"; }
-  else if(hm<930){ txt="集合竞价"; color="var(--amber)"; }
-  else if(hm<=1130){ txt="交易中"; }
-  else if(hm<1300){ txt="午间休市"; color="var(--gray)"; }
-  else if(hm<1430){ txt="交易中"; }
-  else if(hm<1500){                        // 只有最后半小时才显示倒计时
-    const ms=close-now;
+  const ms=close-now, cd=$("#countdown");
+  if(ms<=0){ cd.textContent="已收盘"; cd.style.color="var(--gray)"; }
+  else{
     const m=Math.floor(ms/60000), s=Math.floor(ms%60000/1000);
-    txt=`距收盘 ${m}:${String(s).padStart(2,"0")}`;
-    color = ms<20*60000 ? "var(--amber)" : "var(--dim)";
+    cd.textContent=`距收盘 ${m}:${String(s).padStart(2,"0")}`;
+    cd.style.color = ms<20*60000?"var(--amber)":"var(--dim)";
   }
-  else { txt="已收盘"; color="var(--gray)"; }
-  cd.textContent=txt;
-  cd.style.color=color;
 }
 setInterval(tick,1000); tick();
 
 $("#diagClose").onclick=()=>dlgDiag.close();
-$("#diagRetry").onclick=retryDiag;
 $("#diagCopy").onclick=async ()=>{
   const t=$("#diagText").textContent;
   try{ await navigator.clipboard.writeText(t); alert("已复制"); }
@@ -1420,9 +1152,7 @@ $("#diagCopy").onclick=async ()=>{
 restoreQuoteTime();
 render();
 loadPercentiles().then(()=>render());
-checkHashSync();
-// 启动只拉「定投里分位<5 + 回撤」；监测页切过去或手动刷新时才拉
-probeAPI().then(()=>refreshQuotes("priority"));
+probeAPI().then(()=>refreshQuotes());
 </script>
 </body>
 </html>
