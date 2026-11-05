@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0f172a">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📈</text></svg>">
 <title>指数定投计算器</title>
 <style>
   :root{
@@ -67,6 +68,7 @@
        font-variant-numeric:tabular-nums;white-space:nowrap}
   .amt.zero{color:var(--gray)}
   .amt.neg{color:var(--red)}
+  .amt.near{color:var(--amber)}   /* 分位 5–10：算出来了，但没到触发线 */
   .chg{text-align:center;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
   .chg.up{color:var(--red)} .chg.dn{color:var(--green)} .chg.flat{color:var(--dim);font-weight:400}
   .tag{font-size:10px;padding:1px 6px;border-radius:999px;border:1px solid var(--line);color:var(--dim);white-space:nowrap}
@@ -154,6 +156,7 @@
   <section class="pane on" id="pane-s1">
     <div class="phead">
       <span class="t">今日合计</span><span class="sum" id="sum1">—</span>
+      <span id="near1" style="font-size:11px;color:var(--amber)"></span>
       <span id="neg1" style="font-size:11px;color:var(--red)"></span>
       <span class="sp"></span>
       <button id="toggle1">只看 &lt;5</button>
@@ -163,7 +166,9 @@
     <div id="list1"></div>
     <button class="add" id="add1">+ 添加指数</button>
     <p class="note">填「最低分位」即出金额：<b>（5 − 最低分位 + 当日跌幅）× 单位</b>。
-      取不到行情的指数，涨跌位置会变成一个输入框，填上当天涨跌就能算。</p>
+      分位 &lt;5 是<b style="color:var(--green)">绿色·触发</b>；5–10 也照同样公式算出金额，
+      用<b style="color:var(--amber)">黄色</b>标出（没到触发线，自己决定要不要投）；
+      ≥10 不计算。取不到行情的指数，涨跌位置会变成一个输入框，填上当天涨跌就能算。</p>
   </section>
 
   <!-- ② 回撤 -->
@@ -203,10 +208,12 @@
     <div class="row" style="padding:12px">
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button id="btnReload">重新拉分位</button>
+        <button id="btnRetryAll">重试所有无行情</button>
         <button id="btnDiag">行情诊断</button>
         <button id="btnBulk">批量导入/改分位</button>
         <button id="btnExport">导出配置</button>
         <button id="btnImport">导入配置</button>
+        <button id="btnSync">跨设备同步</button>
         <button id="btnReset" class="ghost">恢复默认</button>
         <button id="btnAuto">自动刷新：盘中</button>
       </div>
@@ -222,6 +229,7 @@
         <button class="mini" id="btnProxySave" style="margin-top:6px">保存代理</button>
       </div>
       <input type="file" id="fileImport" accept=".json" hidden>
+      <p class="note" id="verLine" style="margin-top:10px;color:#64748b"></p>
     </div>
   </section>
 </div>
@@ -264,14 +272,33 @@
        background:#0b1220;border:1px solid var(--line);border-radius:8px;padding:10px;
        max-height:48vh;overflow:auto;-webkit-user-select:text;user-select:text"></pre>
   <div style="display:flex;gap:8px;margin-top:10px">
-    <button class="primary" id="diagCopy" style="flex:1">复制</button>
+    <button class="primary" id="diagRetry" style="flex:1">重试</button>
+    <button id="diagCopy" style="flex:1">复制</button>
     <button id="diagClose" style="flex:1">关闭</button>
+  </div>
+</dialog>
+
+<dialog id="dlgSync">
+  <h3 style="margin:0 0 8px;font-size:15px">跨设备同步</h3>
+  <p class="note" style="margin:0 0 6px">把下面这串码发到另一台设备（微信/备忘录都行），在那边点「粘贴同步码」导入。</p>
+  <textarea id="syncOut" readonly style="height:110px"></textarea>
+  <div style="display:flex;gap:8px;margin-top:8px">
+    <button class="primary" id="syncCopy" style="flex:1">复制同步码</button>
+    <button id="syncCopyLink" style="flex:1">复制链接</button>
+  </div>
+  <hr style="border:none;border-top:1px solid #334155;margin:14px 0">
+  <p class="note" style="margin:0 0 6px">从另一台设备拿到的码，粘在这里导入（会覆盖当前配置）：</p>
+  <textarea id="syncIn" placeholder="在这粘贴同步码…" style="height:80px"></textarea>
+  <div style="display:flex;gap:8px;margin-top:8px">
+    <button class="primary" id="syncDo" style="flex:1">导入</button>
+    <button id="syncClose" style="flex:1">关闭</button>
   </div>
 </dialog>
 
 <script>
 "use strict";
 const KEY = "dca-web-v4";
+const VER = "2026-11-05c";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 8;
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
@@ -474,40 +501,96 @@ function fetchersFor(code){
 const failCache = {};   // 本次会话里确定取不到的，先跳过；手动「刷新」会重试
 let API_OK = null;      // 本地代理 /api/quote 是否可用（用 serve.py 跑时可用）
 let API_STATUS = "未检测";
-function proxyUrl(){
-  const p=(state.proxy||"").trim();
-  if(!p) return "";
-  return p.includes("?") ? p : p.replace(/\/$/,"")+"/";
+let proxyDownUntil = 0; // 代理连不上时，一段时间内不再尝试（避免每次卡 20 秒）
+let proxyStale = null;  // 代理返回过旧价时记一笔，界面上提示「代理延迟」
+const staleQuotes = {}; // 每个代码最近一次拿到的「过期报价」，直连也失败时用它兜底
+const PROXY_COOL = 5*60*1000;
+
+function fetchWithTimeout(url, ms=8000){
+  const ctl = new AbortController();
+  const t = setTimeout(()=>ctl.abort(), ms);
+  return fetch(url, {cache:"no-store", signal:ctl.signal}).finally(()=>clearTimeout(t));
 }
+function proxyBase(){
+  let p=(state.proxy||"").trim().replace(/\s+/g,"");
+  if(!p) return "";
+  // 填成 .../quote、.../quotes、.../ping、.../dbg（自检地址）、或带尾斜杠，都能自动认出来
+  p=p.replace(/\/(quote|quotes|ping|dbg)\/?$/i,"");
+  p=p.replace(/\/+$/,"");
+  if(p && !/^https?:\/\//i.test(p)) p="https://"+p;   // 少了协议也能用
+  return p;
+}
+function proxyUrl(){ return proxyBase() ? proxyBase()+"/quote" : ""; }
+function proxyUsable(){ return !!proxyBase() && Date.now() > proxyDownUntil; }
 function withCode(base, code){
-  return base.includes("?") ? `${base}code=${encodeURIComponent(code)}`
-                            : `${base}?code=${encodeURIComponent(code)}`;
+  return (base||proxyUrl())+"?code="+encodeURIComponent(code);
+}
+/* 「这个价是不是过期的」——代理被边缘缓存时会一直返回同一个价，
+   交易时段内超过 3 分钟没动就判定过期，直接改用浏览器直连。 */
+const STALE_MS = 180*1000;
+function qTs(ts){ const n=+ts||0; return n>1e11 ? n : n*1000; }   // 秒/毫秒都吃
+function ageSecs(ts, nowSec){
+  const t=qTs(ts); if(!t) return 0;
+  const now = nowSec ? nowSec*1000 : Date.now();
+  return Math.max(0, Math.round((now-t)/1000));
+}
+function isStale(ts, nowSec){
+  if(!ts) return false;
+  if(!tradingNow()) return false;
+  return ageSecs(ts, nowSec) > STALE_MS/1000;
 }
 function normQuote(j){
   return { price:+j.price, prev:+j.prev||0, pct:+j.pct,
-           date:String(j.date||"").replace(/-/g,""), src:(j.src||"代理")+"·代理" };
+           date:String(j.date||"").replace(/-/g,""), ts:qTs(j.ts),
+           src:(j.src||"代理")+"·代理" };
+}
+async function fetchViaProxyRaw(code){
+  const r = await fetchWithTimeout(withCode(proxyUrl(), code), 8000);
+  if(!r.ok) throw new Error("proxy-"+r.status);
+  let j=null;
+  try{ j = await r.json(); }catch(e){ throw new Error("proxy-返回的不是 JSON（地址可能填成了网页/自检页）"); }
+  if(j.error) throw new Error("proxy-"+j.error);
+  const q = normQuote(j);
+  // 以前这里不校验，代理回了个别的 JSON（比如 /ping、/dbg）就一路 NaN 到界面上
+  if(!(q.price>0)) throw new Error("proxy-返回里没有价格："+JSON.stringify(j).slice(0,90));
+  if(j.now) q.srvNow = +j.now;
+  return q;
 }
 async function fetchViaProxy(code){
-  const r=await fetch(withCode(proxyUrl(), code), {cache:"no-store"});
-  if(!r.ok) throw new Error("proxy-"+r.status);
-  const j=await r.json();
-  if(j.error) throw new Error("proxy-"+j.error);
-  return normQuote(j);
+  const q = await fetchViaProxyRaw(code);
+  if(isStale(q.ts, q.srvNow)){
+    noteProxyStale(q);              // 代理返回的是缓存住的旧价：短时间跳过它，改走直连
+    staleQuotes[code]=q;            // 万一直连也取不到，至少能显示「滞后 N 分」的价
+    throw new Error("proxy-stale");
+  }
+  return q;
+}
+function noteProxyStale(q){
+  proxyStale = q;
+  proxyDownUntil = Date.now()+120000;
+  const b=$("#apiBadge");
+  if(b){ b.textContent="代理数据延迟·直连"; b.style.color="var(--amber)"; }
 }
 async function fetchAPI(code){
-  const r = await fetch("/api/quote?code="+encodeURIComponent(code), {cache:"no-store"});
+  const r = await fetchWithTimeout("/api/quote?code="+encodeURIComponent(code), 15000);
   if(!r.ok) throw new Error("api-"+r.status);
   const j = await r.json();
   if(j.error) throw new Error("api-"+j.error);
-  return normQuote(j);
+  const q = normQuote(j);
+  if(!(q.price>0)) throw new Error("api-返回里没有价格");
+  return q;
 }
 async function fetchQuote(code, force){
   const key=String(code).trim().toUpperCase();
   if(!force && failCache[key]) throw new Error("无行情");
-  // 1) 自建代理（Cloudflare Worker / 自己的服务器），手机上也能用
-  if(proxyUrl()){
+  // 1) 自建代理（Cloudflare Worker / 自己的服务器）
+  if(proxyUsable()){
     try{ const r=await fetchViaProxy(key); delete failCache[key]; return r; }
-    catch(e){ /* 落到本地代理 */ }
+    catch(e){
+      const m=String(e.message||"");
+      // 网络层挂了（连不上/超时）→ 冷却 5 分钟；业务 404 / 数据过期不冷却
+      if(!m.startsWith("proxy-")) proxyDownUntil = Date.now()+PROXY_COOL;
+    }
   }
   // 2) 本地代理（serve.py 提供）
   if(API_OK !== false){
@@ -521,7 +604,7 @@ async function fetchQuote(code, force){
       if(m && !m.startsWith("api-")) API_OK=false;
     }
   }
-  // 3) 浏览器直连
+  // 3) 浏览器直连（兜底，东财/腾讯/同花顺的 JSONP 不受 CORS 限制）
   const all=fetchersFor(code);
   const cached=(state.src||{})[key];
   if(cached){
@@ -537,21 +620,72 @@ async function fetchQuote(code, force){
       return r;
     }catch(e){}
   }
+  // 4) 实在取不到：如果代理给过旧价，就显示这个旧价并标出滞后多少分钟（好过「无行情」）
+  const old=staleQuotes[key];
+  if(old){
+    const mins=Math.max(1, Math.round(ageSecs(old.ts, old.srvNow)/60));
+    return {...old, src:"代理·滞后"+mins+"分"};
+  }
   failCache[key]=true;
   throw new Error("无行情");
 }
 
 const dlgDiag=$("#dlgDiag");
+let diagCode="";
 async function showDiag(code){
+  diagCode=code;
   const pre=$("#diagText");
   pre.textContent=`检测 ${code} …`;
   try{ dlgDiag.showModal(); }catch(e){}
   pre.textContent=await diagnose(code);
 }
+async function retryDiag(){
+  if(!diagCode) return;
+  const pre=$("#diagText");
+  pre.textContent=`重新拉取 ${diagCode} …`;
+  delete failCache[diagCode];
+  try{
+    const r=await fetchQuote(diagCode, true);
+    quotes[diagCode]={price:r.price, prev:r.prev, pct:r.pct, date:r.date, src:r.src, at:Date.now()};
+    render();
+    pre.textContent=`✅ 拿到数据了\n\n${JSON.stringify(r,null,2)}`;
+  }catch(e){
+    pre.textContent=`❌ 仍然失败：${e.message||e}\n\n`+await diagnose(diagCode);
+  }
+}
+function isLocalHost(){
+  const h=location.hostname;
+  return h==="localhost" || h==="127.0.0.1" || h===""
+      || /^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h);
+}
 async function probeAPI(){
   const badge=$("#apiBadge");
+  const setBadge=(txt,color)=>{ if(badge){ badge.textContent=txt; badge.style.color=color; } };
+
+  // 配了自建代理：先快速探一次，不通就直接冷却，别让后面每个请求都卡 8 秒
+  if(proxyBase()){
+    try{
+      const r=await fetchWithTimeout(proxyBase()+"/ping", 4000);
+      const j=await r.json();
+      if(j && j.ok){
+        if(proxyStale && isStale(proxyStale.ts, proxyStale.srvNow)) setBadge("代理数据延迟·直连","var(--amber)");
+        else { proxyDownUntil=0; setBadge("代理在线","var(--green)"); }
+      }
+      else throw new Error("bad ping");
+    }catch(e){
+      proxyDownUntil=Date.now()+PROXY_COOL;
+      setBadge("代理离线·直连","var(--amber)");
+    }
+  }
+
+  if(!isLocalHost()){
+    API_OK=false;
+    API_STATUS = proxyBase() ? "使用自建代理" : "页面不在本地服务上";
+    if(!proxyBase()) setBadge("直连","var(--dim)");
+    return false;
+  }
   try{
-    const r=await fetch("/api/ping",{cache:"no-store"});
+    const r=await fetchWithTimeout("/api/ping", 5000);
     if(!r.ok){ API_OK=false; API_STATUS=`/api/ping 返回 ${r.status}（serve.py 是旧进程？重启一下）`; }
     else{
       const j=await r.json();
@@ -561,8 +695,8 @@ async function probeAPI(){
   }catch(e){
     API_OK=false; API_STATUS="连不上（页面不是 serve.py 起的）";
   }
-  if(badge) badge.textContent = API_OK ? "代理✓" : (proxyUrl()? "自建代理":"直连");
-  if(badge) badge.style.color = API_OK ? "var(--green)" : "var(--dim)";
+  if(API_OK) setBadge("本地代理","var(--green)");
+  else if(!proxyBase()) setBadge("直连","var(--dim)");
   return API_OK;
 }
 
@@ -571,7 +705,12 @@ async function diagnose(code){
   const out=[];
   if(proxyUrl()){
     const t=Date.now();
-    try{ const r=await fetchViaProxy(code); out.push(`✅ 自建代理  ${r.price}  ${(+r.pct).toFixed(2)}%  ${Date.now()-t}ms`); }
+    try{
+      const r=await fetchViaProxyRaw(code);
+      const age=r.ts ? `  ${ageSecs(r.ts, r.srvNow)}s前` : "  ⚠️无源时间戳（代理是旧版，无法判断缓存）";
+      const w=isStale(r.ts, r.srvNow) ? "  ⚠️缓存旧价" : "";
+      out.push(`✅ 自建代理  ${r.price}  ${(+r.pct).toFixed(2)}%${age}${w}  ${Date.now()-t}ms`);
+    }
     catch(e){ out.push(`❌ 自建代理  ${e.message}  ${Date.now()-t}ms`); }
   }
   const t0=Date.now();
@@ -589,6 +728,9 @@ async function diagnose(code){
       out.push(`❌ ${f.id}  ${e && e.message ? e.message : e}  ${Date.now()-t}ms`);
     }
   }
+  out.push("");
+  out.push("说明：同一时刻不同源点位不同 = 有一方是缓存/延迟行情；");
+  out.push("页面以「点位 + 涨跌幅 + 源时间戳」都最新的一方为准。");
   return `代码 ${code}\n\n`+out.join("\n");
 }
 
@@ -612,9 +754,19 @@ async function loadPercentiles(force){
     }catch(e){}
   }
   try{
-    const src=(state.pctUrl||"").trim() || "data/percentiles.json";
-    const r=await fetch(src+(src.includes("?")?"&":"?")+"_="+Date.now(), {cache:"no-store"});
-    if(!r.ok) throw new Error("HTTP "+r.status);
+    // 依次尝试：自定义地址 → data/percentiles.json → 根目录 percentiles.json
+    const urls = (state.pctUrl||"").trim()
+      ? [(state.pctUrl||"").trim()]
+      : ["data/percentiles.json", "percentiles.json"];
+    let r = null, lastErr = null;
+    for(const u of urls){
+      try{
+        const rr = await fetch(u+(u.includes("?")?"&":"?")+"_="+Date.now(), {cache:"no-store"});
+        if(rr.ok){ r = rr; break; }
+        lastErr = "HTTP "+rr.status;
+      }catch(e){ lastErr = e.message; }
+    }
+    if(!r) throw new Error(lastErr||"not found");
     const j=await r.json();
     if(j && j.items){
       AUTO=j;
@@ -660,10 +812,19 @@ function calc1(it){
   const o={min, chg, score:0, amount:0, tag:"off", text:""};
   if(chg.pct===null){ o.tag="na"; o.text="无行情"; return o; }
   if(min===null){ o.text="未填分位"; return o; }
-  if(min>=TRIGGER){ o.tag=min<NEAR?"near":"off"; o.text=min<NEAR?"临近":"不投"; return o; }
   // 分数可以为负：跌得多为正，涨得多为负；金额如实显示，不截断、不保底
+  const unit=()=>num(it.unit)??10;
+  if(min>=TRIGGER){
+    if(min>=NEAR){ o.tag="off"; o.text="不投"; return o; }
+    // 5–10 这一段：照样算金额（黄色标记），但不算「触发」
+    o.tag="near";
+    o.score=(TRIGGER-min)+(-chg.pct);
+    o.amount=Math.round(o.score*unit());
+    o.text = o.amount<0 ? "临近·负值" : (o.amount>0&&o.amount<10 ? "临近·不足10" : "临近");
+    return o;
+  }
   o.score=(TRIGGER-min)+(-chg.pct);
-  o.amount=Math.round(o.score*(num(it.unit)??10));
+  o.amount=Math.round(o.score*unit());
   o.tag="hit";
   o.text = o.amount<0 ? "负值" : (o.amount>0&&o.amount<10 ? "不足10" : "触发");
   return o;
@@ -691,11 +852,16 @@ function calc2(it){
 function chipClass(v){ return v===null?"empty":v<TRIGGER?"hit":v<NEAR?"near":"off"; }
 /* 金额显示：负数原样显示，未填分位/无行情显示 — */
 function amtView(r){
-  if(r.tag==="na" || r.tag==="near" || r.tag==="off" || r.min===null || r.amount===undefined)
+  if(r.tag==="na"){
+    // 已填分位但没行情 → 提示去填涨跌，而不是显示「—」
+    return r.min===null ? { txt:"—", cls:"zero" } : { txt:"待填", cls:"zero" };
+  }
+  if(r.tag==="off" || r.min===null || r.amount===undefined)
     return { txt:"—", cls:"zero" };
   const v=r.amount;
   if(v===0) return { txt:"¥0", cls:"zero" };
-  return { txt:(v<0?"-¥":"¥")+Math.abs(v), cls: v<0?"neg":"" };
+  if(v<0) return { txt:"-¥"+Math.abs(v), cls:"neg" };
+  return { txt:"¥"+v, cls: r.tag==="near" ? "near" : "" };
 }
 function dateLabel(d){
   if(!d||d.length<8) return "";
@@ -730,7 +896,7 @@ function renderSec1(){
       <div class="grid">
         <div class="nmcell">
           <span class="nm2">${it.name}</span>
-          <span class="code2">${it.code}${q?"":' · <span style="color:#f87171">无行情</span>'}</span>
+          <span class="code2">${it.code}${q?"":` · <span style="color:#f87171" data-diag="${it.code}">无行情·点我</span>`}</span>
         </div>
         <input inputmode="decimal" data-k="min" data-id="${it.id}" value="${it.min??""}" placeholder="分位">
         ${chgCell}
@@ -822,16 +988,22 @@ function render(){
   renderSec1(); renderSec2(); renderMon(); renderTotals(); save();
 }
 function renderTotals(){
-  let s1=0,s2=0,n1=0,n2=0,neg=0;
+  let s1=0,s2=0,sn=0,n1=0,n2=0,neg=0;
   state.list1.forEach(it=>{
     const r=calc1(it);
     if(r.tag==="na"||r.min===null) return;
-    if(r.amount>0){ s1+=r.amount; n1++; }
-    else if(r.amount<0) neg++;
+    if(r.tag==="hit"){
+      if(r.amount>0){ s1+=r.amount; n1++; }
+      else if(r.amount<0) neg++;
+    }else if(r.tag==="near"){
+      if(r.amount>0) sn+=r.amount;
+    }
   });
   state.list2.forEach(it=>{const r=calc2(it); if(r.amount>0){s2+=r.amount;n2++;}});
   $("#sum1").textContent=s1?"¥"+s1.toLocaleString("zh-CN"):"—";
   $("#sum2").textContent=s2?"¥"+s2.toLocaleString("zh-CN"):"—";
+  const nr=$("#near1");
+  if(nr) nr.textContent = sn ? `5–10 段 ¥${sn.toLocaleString("zh-CN")}` : "";
   const ng=$("#neg1");
   if(ng) ng.textContent = neg ? `另 ${neg} 个负值` : "";
   const b1=$("#badge1"), b2=$("#badge2");
@@ -1033,30 +1205,106 @@ function tradingNow(){
   const d=new Date();
   if(d.getDay()===0||d.getDay()===6) return false;
   const hm=d.getHours()*100+d.getMinutes();
-  return hm>=925 && hm<=1505;
+  // 上午 9:25–11:30，下午 13:00–15:05；午休不刷
+  return (hm>=925 && hm<=1130) || (hm>=1300 && hm<=1505);
 }
+/* 批量取数：有代理/本地接口时一次问多个代码，比逐个快一个数量级 */
+function proxyBatchUrl(){
+  const b=proxyBase();
+  return b ? b+"/quotes" : "";
+}
+async function fetchBatch(codes){
+  const base=proxyBatchUrl();
+  const url = base
+    ? base+"?codes="+codes.map(encodeURIComponent).join(",")
+    : "/api/quotes?codes="+codes.map(encodeURIComponent).join(",");
+  const r = await fetchWithTimeout(url, base?15000:20000);
+  if(!r.ok) throw new Error("batch-"+r.status);
+  const j=await r.json();
+  return { items: j.items||{}, now: j.now ? +j.now : 0 };
+}
+/* 批量只在代理/本地接口可用时走；代理挂了就别试，直接逐个走浏览器 */
+function canBatch(){ return proxyUsable() || API_OK!==false; }
+
+/* 自动刷新只拉「要紧的」：回撤 + 定投里分位 <10 的（<5 触发、5–10 也算金额），监测留手动 */
+function priorityCodes(){
+  const set=new Set();
+  state.list2.forEach(it=>{ if(!NO_QUOTE.has(it.code)) set.add(it.code); });
+  state.list1.forEach(it=>{
+    const m=minPctOf(it);
+    if(m!==null && m<NEAR && !NO_QUOTE.has(it.code)) set.add(it.code);
+  });
+  return [...set];
+}
+
 async function refreshQuotes(scope, force){
   scope = scope || "all";
   // 定投/回撤优先，监测排在后面，避免一次拉太多把要紧的行情拖慢
   if(scope==="all"){
-    await refreshQuotes("main", force);
+    await refreshQuotes("priority", force);
     return refreshQuotes("mon", force);
   }
-  const mainItems=[...state.list1,...state.list2];
-  const monItems=state.list3;
-  const items = scope==="main" ? mainItems : monItems;
-  const codes=[...new Set(items.map(x=>x.code))];
+  const codes = scope==="mon"
+    ? [...new Set(state.list3.map(x=>x.code))]
+    : scope==="main"
+      ? [...new Set([...state.list1,...state.list2].map(x=>x.code))]
+      : priorityCodes();
   codes.filter(c=>NO_QUOTE.has(c)).forEach(c=>{ quotes[c]={err:"无行情", at:Date.now()}; });
-  // 90 秒内取过的直接复用，避免切页签、反复点刷新时重复请求
+  // 90 秒内取过的直接复用
   const todo=codes.filter(c=>!NO_QUOTE.has(c) && !(quotes[c] && quotes[c].at && Date.now()-quotes[c].at<90000));
   $("#status").textContent = todo.length ? `刷新 0/${todo.length}` : "用缓存";
-  let done=0;
-  await pool(todo, 6, async c=>{
-    try{ quotes[c]=await fetchQuote(c, force); }
-    catch(e){ quotes[c]={err:"无行情"}; }
-    quotes[c].at=Date.now();
+
+  let done=0, batchNow=0;
+  const mark=(c,got,fromBatch)=>{
+    const ok = got && !got.error && got.price>0 && Number.isFinite(+got.price)
+               && Number.isFinite(+got.pct);
+    if(ok && fromBatch && isStale(got.ts, batchNow||undefined)){
+      // 代理返回的是缓存住的旧价：先标过期，后面走直连重试
+      noteProxyStale(got);
+      staleQuotes[c]={...got, ts:qTs(got.ts), srvNow:batchNow||0};
+      quotes[c]={err:"数据过期", at:Date.now()};
+    }else if(ok){
+      quotes[c]={price:+got.price, prev:+got.prev||0, pct:+got.pct, date:String(got.date||"").replace(/-/g,""),
+                 ts:qTs(got.ts), src:got.src||"代理", at:Date.now()};
+      delete failCache[c];
+    }else{
+      quotes[c]={err:"无行情", at:Date.now()};
+    }
     done++; $("#status").textContent=`刷新 ${done}/${todo.length}`;
-  });
+  };
+
+  if(canBatch() && todo.length>1){
+    const CH=8;
+    // 只有「自建代理」的批量结果才检查时间戳：本地 serve.py 是现拉的，没必要
+    const batchViaProxy = !!proxyBatchUrl() && proxyUsable();
+    for(let i=0;i<todo.length;i+=CH){
+      const chunk=todo.slice(i,i+CH);
+      try{
+        const got=await fetchBatch(chunk);
+        if(got.now) batchNow=+got.now;
+        chunk.forEach(c=>mark(c, got.items ? got.items[c] : got[c], batchViaProxy));
+      }catch(e){
+        // 批量失败就退回逐个
+        await pool(chunk, 4, async c=>{
+          try{ mark(c, await fetchQuote(c, force)); }catch(err){ mark(c, null); }
+        });
+      }
+    }
+  }else{
+    await pool(todo, 6, async c=>{
+      try{ mark(c, await fetchQuote(c, force)); }catch(e){ mark(c, null); }
+    });
+  }
+
+  // 批量里失败的，隔一会儿单独重试一次（雪球偶发限流）
+  const missed=todo.filter(c=>quotes[c] && quotes[c].err);
+  if(missed.length){
+    await new Promise(r=>setTimeout(r, 700));
+    await pool(missed, 2, async c=>{
+      try{ mark(c, await fetchQuote(c, true)); }catch(e){}
+    });
+  }
+
   if(scope!=="mon") lastMainAt=Date.now();
   if(scope!=="main") lastMonAt=Date.now();
   try{ localStorage.setItem(QTS, JSON.stringify({main:lastMainAt, mon:lastMonAt})); }catch(e){}
@@ -1067,7 +1315,87 @@ async function refreshQuotes(scope, force){
   render();
   setTimeLabels();
 }
-setInterval(()=>{ if(autoOn && tradingNow()) refreshQuotes("main"); }, AUTO_MS);
+setInterval(()=>{ if(autoOn && tradingNow()) refreshQuotes("priority"); }, AUTO_MS);
+
+/* ---------- 跨设备同步码 ---------- */
+function b64enc(str){
+  const bytes=new TextEncoder().encode(str);
+  let bin="";
+  for(const b of bytes) bin+=String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+}
+function b64dec(s){
+  s=String(s).trim().replace(/-/g,"+").replace(/_/g,"/");
+  while(s.length%4) s+="=";
+  const bin=atob(s);
+  const bytes=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+function packState(){
+  const o={
+    v:1,
+    l1:state.list1.map(x=>[x.name,x.code,x.min??"",x.unit??10,x.pe??"",x.pb??"",x.mpct??""]),
+    l2:state.list2.map(x=>[x.name,x.code,x.high??"",x.unit??1,x.manual??""]),
+    l3:state.list3.map(x=>[x.name,x.code,x.pe??"",x.pb??""])
+  };
+  if(state.proxy)  o.px=state.proxy;
+  if(state.pctUrl) o.pu=state.pctUrl;
+  return o;
+}
+function unpackState(o){
+  return {
+    seedVer: SEED_VER,
+    list1:(o.l1||[]).map((a,i)=>({id:"y1-"+i, name:a[0], code:a[1], min:a[2]??"", unit:a[3]??10, pe:a[4]??"", pb:a[5]??"", mpct:a[6]??""})),
+    list2:(o.l2||[]).map((a,i)=>({id:"y2-"+i, name:a[0], code:a[1], high:a[2]??"", unit:a[3]??1, manual:a[4]??""})),
+    list3:(o.l3||[]).map((a,i)=>({id:"y3-"+i, name:a[0], code:a[1], min:"", unit:10, pe:a[2]??"", pb:a[3]??"", mpct:""})),
+    proxy:o.px||"", pctUrl:o.pu||"", last:{}, src:{}
+  };
+}
+function makeSyncCode(){ return b64enc(JSON.stringify(packState())); }
+function applySync(text){
+  let o;
+  try{ o=JSON.parse(b64dec(text)); }
+  catch(e){ alert("同步码无效，检查是否粘全"); return false; }
+  if(!o || !o.l1){ alert("同步码内容不对"); return false; }
+  state=unpackState(o);
+  save(); render();
+  $("#proxyInput").value=state.proxy||"";
+  $("#pctUrlInput").value=state.pctUrl||"";
+  probeAPI().then(()=>refreshQuotes("all", true));
+  return true;
+}
+const dlgSync=$("#dlgSync");
+$("#btnSync").onclick=()=>{
+  $("#syncOut").value=makeSyncCode();
+  $("#syncIn").value="";
+  try{ dlgSync.showModal(); }catch(e){}
+};
+$("#syncClose").onclick=()=>dlgSync.close();
+$("#syncCopy").onclick=async ()=>{
+  try{ await navigator.clipboard.writeText($("#syncOut").value); alert("同步码已复制"); }
+  catch(e){ $("#syncOut").select(); alert("已选中，请长按复制"); }
+};
+$("#syncCopyLink").onclick=async ()=>{
+  const link=location.origin+location.pathname+"#sync="+makeSyncCode();
+  try{ await navigator.clipboard.writeText(link); alert("链接已复制（很长，微信可能折叠，建议用同步码）"); }
+  catch(e){ alert(link); }
+};
+$("#syncDo").onclick=()=>{
+  const t=$("#syncIn").value.trim();
+  if(!t){ alert("先粘贴同步码"); return; }
+  if(!confirm("导入会覆盖当前配置（含已填分位），确定？")) return;
+  if(applySync(t)){ dlgSync.close(); alert("已导入"); }
+};
+/* 打开带 #sync= 的链接时提示导入 */
+function checkHashSync(){
+  const m=location.hash.match(/[#&]sync=([^&]+)/);
+  if(!m) return;
+  if(confirm("检测到同步链接，导入这份配置？\n（会覆盖当前设置）")){
+    applySync(decodeURIComponent(m[1]));
+  }
+  history.replaceState(null,"",location.pathname+location.search);
+}
 
 /* ---------- 按钮 ---------- */
 $("#toggle1").onclick=()=>{ onlyHit=!onlyHit; renderSec1(); };
@@ -1077,6 +1405,15 @@ $("#btnRefresh").onclick=async ()=>{
 };
 $("#btnReload").onclick=async ()=>{ const ok=await loadPercentiles(true); render(); alert(ok?"分位已更新":"没读到数据文件（本地打开时正常）"); };
 $("#proxyInput").value = state.proxy || "";
+$("#pctUrlInput").value = state.pctUrl || "";
+$("#btnPctUrlSave").onclick=async ()=>{
+  state.pctUrl = ($("#pctUrlInput").value||"").trim();
+  save();
+  try{ localStorage.removeItem("dca-pct-cache"); }catch(e){}
+  const ok = await loadPercentiles(true);
+  render();
+  alert(ok ? "分位地址已保存，数据已更新" : "保存了，但没读到数据（检查地址能不能打开）");
+};
 $("#btnProxySave").onclick=()=>{
   state.proxy = ($("#proxyInput").value||"").trim();
   save();
@@ -1087,6 +1424,14 @@ $("#btnDiag").onclick=async ()=>{
   const c=prompt("要诊断的代码（如 931139 / H30269 / KWEB）","931139");
   if(!c) return;
   showDiag(c.trim().toUpperCase());
+};
+$("#btnRetryAll").onclick=async ()=>{
+  const all=[...state.list1,...state.list2,...state.list3].map(x=>x.code);
+  const bad=[...new Set(all)].filter(c=>quotes[c] && quotes[c].err);
+  if(!bad.length){ alert("现在没有无行情的指数"); return; }
+  bad.forEach(c=>delete failCache[c]);
+  alert(`重试 ${bad.length} 个…`);
+  await refreshQuotes("all", true);
 };
 $("#btnExport").onclick=()=>{
   const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
@@ -1114,10 +1459,11 @@ $("#btnCopy").onclick=async ()=>{
   state.list1.forEach(it=>{
     const r=calc1(it);
     if(r.tag!=="na" && r.min!==null && r.amount!==0)
-      L.push(`【估值】${it.name} 分位${fmt(r.min)} 涨跌${fmt(r.chg.pct)}% → ${r.amount<0?"-¥":"¥"}${Math.abs(r.amount)}`);
+      L.push(`【${r.tag==="near"?"临近":"估值"}】${it.name} 分位${fmt(r.min)} 涨跌${fmt(r.chg.pct)}% → ${r.amount<0?"-¥":"¥"}${Math.abs(r.amount)}`);
   });
   state.list2.forEach(it=>{const r=calc2(it); if(r.amount>0) L.push(`【回撤】${it.name} 回撤${fmt(r.dd,1)}% 系数${r.coef} → ¥${r.amount}`);});
-  L.push(`合计：定投 ${$("#sum1").textContent}，回撤 ${$("#sum2").textContent}`);
+  const nearTxt=$("#near1")&&$("#near1").textContent;
+  L.push(`合计：定投 ${$("#sum1").textContent}${nearTxt?`（${nearTxt}）`:""}，回撤 ${$("#sum2").textContent}`);
   try{ await navigator.clipboard.writeText(L.join("\n")); alert("已复制"); }
   catch(e){ alert(L.join("\n")); }
 };
@@ -1126,18 +1472,31 @@ $("#btnCopy").onclick=async ()=>{
 function tick(){
   const now=new Date();
   $("#clock").textContent=now.toLocaleTimeString("zh-CN",{hour12:false});
+  const cd=$("#countdown");
+  const day=now.getDay(), hm=now.getHours()*100+now.getMinutes();
   const close=new Date(now); close.setHours(15,0,0,0);
-  const ms=close-now, cd=$("#countdown");
-  if(ms<=0){ cd.textContent="已收盘"; cd.style.color="var(--gray)"; }
-  else{
+
+  let txt="", color="var(--dim)";
+  if(day===0||day===6){ txt="周末"; }
+  else if(hm<915){ txt="未开盘"; color="var(--gray)"; }
+  else if(hm<930){ txt="集合竞价"; color="var(--amber)"; }
+  else if(hm<=1130){ txt="交易中"; }
+  else if(hm<1300){ txt="午间休市"; color="var(--gray)"; }
+  else if(hm<1430){ txt="交易中"; }
+  else if(hm<1500){                        // 只有最后半小时才显示倒计时
+    const ms=close-now;
     const m=Math.floor(ms/60000), s=Math.floor(ms%60000/1000);
-    cd.textContent=`距收盘 ${m}:${String(s).padStart(2,"0")}`;
-    cd.style.color = ms<20*60000?"var(--amber)":"var(--dim)";
+    txt=`距收盘 ${m}:${String(s).padStart(2,"0")}`;
+    color = ms<20*60000 ? "var(--amber)" : "var(--dim)";
   }
+  else { txt="已收盘"; color="var(--gray)"; }
+  cd.textContent=txt;
+  cd.style.color=color;
 }
 setInterval(tick,1000); tick();
 
 $("#diagClose").onclick=()=>dlgDiag.close();
+$("#diagRetry").onclick=retryDiag;
 $("#diagCopy").onclick=async ()=>{
   const t=$("#diagText").textContent;
   try{ await navigator.clipboard.writeText(t); alert("已复制"); }
@@ -1149,10 +1508,16 @@ $("#diagCopy").onclick=async ()=>{
 };
 
 /* ---------- 启动 ---------- */
+if($("#verLine")){
+  $("#verLine").textContent = `版本 ${VER}　·　文件 ${location.pathname.split("/").pop()||"index.html"}`
+    + (proxyBase()? `　·　代理 ${proxyBase()}` : "　·　未设代理（直连）");
+}
 restoreQuoteTime();
 render();
 loadPercentiles().then(()=>render());
-probeAPI().then(()=>refreshQuotes());
+checkHashSync();
+// 启动只拉「定投里分位<5 + 回撤」；监测页切过去或手动刷新时才拉
+probeAPI().then(()=>refreshQuotes("priority"));
 </script>
 </body>
 </html>
