@@ -34,6 +34,7 @@
   .wrap{max-width:760px;margin:0 auto;padding:12px 12px 4px}
   .pane{display:none}
   .pane.on{display:block}
+  .hide{display:none!important}   /* 监测暂时隐藏 */
 
   .phead{display:flex;align-items:baseline;gap:8px;margin-bottom:8px;flex-wrap:wrap}
   .phead .t{font-size:14px;color:var(--dim);font-weight:600}
@@ -176,6 +177,7 @@
     <div class="phead">
       <span class="t">今日合计</span><span class="sum" id="sum2">—</span>
       <span class="sp"></span>
+      <button id="retry2" title="只重拉回撤里取不到行情的代码">重试无行情</button>
       <button id="add2">+ 添加</button>
     </div>
     <div class="ptime2" id="t2time">行情 —</div>
@@ -184,8 +186,8 @@
       40–50%→2，50–60%→2.5，每多 10% 加 0.5。</p>
   </section>
 
-  <!-- ③ 监测 -->
-  <section class="pane" id="pane-s3">
+  <!-- ③ 监测（暂时隐藏：SHOW_MON=false 时整个卡片和入口都不显示） -->
+  <section class="pane hide" id="pane-s3">
     <div class="phead">
       <span class="t">监测</span><span class="sum" id="monHint" style="font-size:13px;color:var(--dim)"></span>
       <span class="sp"></span>
@@ -237,18 +239,18 @@
 <nav class="tabbar">
   <button data-tab="s1" class="on">定投<span class="badge zero" id="badge1">0</span></button>
   <button data-tab="s2">回撤<span class="badge zero" id="badge2">0</span></button>
-  <button data-tab="s3">监测</button>
+  <button data-tab="s3" class="hide">监测</button>
   <button data-tab="s4">设置</button>
 </nav>
 
 <dialog id="dlgAdd">
   <h3 style="margin:0 0 10px;font-size:15px">添加指数</h3>
   <select id="addSel"></select>
-  <input id="addCode" placeholder="或直接填代码：399997 / 886042 / sh000300">
-  <p class="note">名称会自动补；取不到行情的也能加，手填分位和涨跌即可。</p>
+  <input id="addCode" placeholder="或直接填代码：399673 / 886042 / sh000300" autocomplete="off">
+  <div id="addHint" class="note" style="margin:4px 0 0;min-height:16px;color:var(--amber)"></div>
+  <p class="note" style="margin:6px 0 0">名称会在查询时自动补上（腾讯 → 东财），查不到就用代码；取不到行情的也能加，手填涨跌即可。</p>
   <div style="display:flex;gap:8px;margin-top:10px">
     <button class="primary" id="addOk1" style="flex:1">加到定投</button>
-    <button id="addOk3" style="flex:1">加到监测</button>
     <button id="addCancel" style="flex:0 0 64px">取消</button>
   </div>
 </dialog>
@@ -261,7 +263,7 @@
   <textarea id="bulkText" placeholder="中证白酒 399997 3.2&#10;886042"></textarea>
   <div style="display:flex;gap:8px;margin-top:10px">
     <button class="primary" id="bulkOk1" style="flex:1">导入到定投</button>
-    <button id="bulkOk3" style="flex:1">导入到监测</button>
+    <button id="bulkOk3" class="hide" style="flex:1">导入到监测</button>
     <button id="bulkCancel" style="flex:0 0 64px">取消</button>
   </div>
 </dialog>
@@ -298,10 +300,11 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-05c";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-07a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 8;
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
+const SHOW_MON = false;   // 监测页暂时不用：入口隐藏、也不拉它的行情
 
 const SEED1 = [
   ["中证白酒","399997"],["CS消费50","931139"],["中证消费","1B0932"],
@@ -420,7 +423,7 @@ async function fetchTX(code){
 /* 东方财富 ulist：secid 形如 2.931139 / 100.HSIII / 105.KWEB，支持 cb= JSONP
    多个镜像轮着试，某个被墙/限流还能命中别的 */
 const EM_HOSTS = ["push2.eastmoney.com","82.push2.eastmoney.com","push2delay.eastmoney.com"];
-async function fetchEM(secid){
+async function emItem(secid){
   const cb="__em"+Math.random().toString(36).slice(2,8);
   let payload=null; window[cb]=d=>{payload=d;};
   let host=null;
@@ -437,10 +440,57 @@ async function fetchEM(secid){
   if(!payload) throw new Error("东财脚本无回调("+host+")");
   const it = payload.data && payload.data.diff && payload.data.diff[0];
   if(!it) throw new Error("东财返回空");
+  return it;
+}
+async function fetchEM(secid){
+  const it = await emItem(secid);
   if(!(it.f2>0)) throw new Error("东财无报价");
   const prev=+it.f18||0;
   let pct = (it.f3!==undefined && it.f3!==null) ? +it.f3 : (prev? (it.f2/prev-1)*100 : 0);
-  return { price:+it.f2, prev, pct, date:"", src:"东财" };
+  return { price:+it.f2, prev, pct, date:"", src:"东财", name:it.f14?String(it.f14).trim():"" };
+}
+
+/* ---------- 查中文名称 ----------
+   只填了代码也能自动补名字：腾讯 f[1]（sh/sz/ETF）→ 东财 f14（中证 93xxxx / 华证 Hxxxx / 恒生 / 美股）。
+   以前是写死在 SEED 清单里的，加个新代码就没有名字，现在改成查询时现查。 */
+const NAME_CACHE = {};
+function emSecids(c){
+  if(/^H\d{5}$/.test(c) || /^(93|95)/.test(c) || c.startsWith("005")) return ["2."+c];
+  if(c.startsWith("HS")) return ["100."+c];
+  if(/^(sh|sz|hk|us)/i.test(c)) return [];
+  if(/^\d{6}$/.test(c)) return ["0."+c, "1."+c];
+  if(/^[A-Z]{1,6}$/.test(c)) return ["105."+c];
+  return [];
+}
+async function lookupName(code){
+  const c=String(code||"").trim().toUpperCase();
+  if(!c) return "";
+  if(NAME_CACHE[c]!==undefined) return NAME_CACHE[c];
+  let name="";
+  const txc=txCode(c);
+  if(txc){
+    try{
+      const key="v_"+txc; window[key]=undefined;
+      await loadScript("https://qt.gtimg.cn/q="+txc+"&_="+Date.now(), 6000, "gbk");
+      const s=window[key];
+      if(typeof s==="string"){
+        const f=s.split("~");
+        const nm=String(f[1]||"").trim();
+        if(nm && nm!==c && nm!=="") name=nm;
+      }
+    }catch(e){ /* 换下一个源 */ }
+  }
+  if(!name){
+    for(const secid of emSecids(c)){
+      try{
+        const it=await emItem(secid);
+        const nm=it&&it.f14?String(it.f14).trim():"";
+        if(nm){ name=nm; break; }
+      }catch(e){}
+    }
+  }
+  NAME_CACHE[c]=name;
+  return name;
 }
 async function fetchTHS(code){
   for(const prefix of ["zs","bk"]){
@@ -903,7 +953,7 @@ function renderSec1(){
         <div class="amt ${amtView(r).cls}">${amtView(r).txt}</div>
         <div class="ops">
           <button class="ico" data-gear="${it.id}" title="设置">⚙</button>
-          <button class="ico" data-move="${it.id}" title="移到监测">⇄</button>
+          ${SHOW_MON?`<button class="ico" data-move="${it.id}" title="移到监测">⇄</button>`:""}
           <button class="ico del" data-del="${it.id}">×</button>
         </div>
       </div>
@@ -985,7 +1035,7 @@ function renderMon(){
 
 function render(){
   state.list1.forEach(remember); state.list3.forEach(remember);
-  renderSec1(); renderSec2(); renderMon(); renderTotals(); save();
+  renderSec1(); renderSec2(); if(SHOW_MON) renderMon(); renderTotals(); save();
 }
 function renderTotals(){
   let s1=0,s2=0,sn=0,n1=0,n2=0,neg=0;
@@ -1010,16 +1060,25 @@ function renderTotals(){
   b1.textContent=n1; b2.textContent=n2;
   b1.className="badge"+(n1?"":" zero");
   b2.className="badge"+(n2?"":" zero");
+
+  // 回撤的「重试无行情」：按钮上直接显示还有几个没行情
+  const r2=$("#retry2");
+  if(r2 && !r2.disabled){
+    const na2=state.list2.filter(it=>{ const q=quotes[it.code]; return !q || q.err; }).length;
+    r2.textContent = na2 ? `重试无行情 ${na2}` : "重试无行情";
+    r2.classList.toggle("on", !!na2);
+  }
 }
 
 /* ---------- 选项卡 ---------- */
 function switchTab(t){
+  if(t==="s3" && !SHOW_MON) return;      // 监测已隐藏
   tab=t;
   document.querySelectorAll(".pane").forEach(p=>p.classList.toggle("on", p.id==="pane-"+t));
   document.querySelectorAll("[data-tab]").forEach(b=>b.classList.toggle("on", b.dataset.tab===t));
   window.scrollTo({top:0});
   // 监测页：超过 5 分钟才重新拉，平时直接看缓存
-  if(t==="s3" && Date.now()-lastMonAt > 5*60*1000) refreshQuotes("mon");
+  if(t==="s3" && SHOW_MON && Date.now()-lastMonAt > 5*60*1000) refreshQuotes("mon");
 }
 
 /* ---------- 事件 ---------- */
@@ -1112,26 +1171,70 @@ function openAdd(){
 $("#add1").onclick=openAdd;
 $("#add3").onclick=openAdd;
 $("#addCancel").onclick=()=>dlgAdd.close();
+/* 边输代码边查名称（防抖 400ms），省得加完才发现是代码当名字 */
+let nameTimer=null, nameSeq=0;
+function addCodeChanged(){
+  const code=$("#addCode").value.trim();
+  const hint=$("#addHint");
+  clearTimeout(nameTimer);
+  if(!code){ hint.textContent=""; return; }
+  if(code.length<4){ hint.textContent=""; return; }
+  hint.textContent="查询名称…";
+  const seq=++nameSeq;
+  nameTimer=setTimeout(async ()=>{
+    const nm=await lookupName(code);
+    if(seq!==nameSeq) return;                    // 已经又输入了，丢弃旧结果
+    hint.textContent = nm ? `名称：${nm}` : "查不到名称，将用代码当名字（不影响计算）";
+  }, 400);
+}
 async function doAdd(target){
-  const code=$("#addCode").value.trim()||$("#addSel").value;
+  const code=($("#addCode").value.trim()||$("#addSel").value).toUpperCase();
   if(!code){ alert("选一个或填代码"); return; }
   const bucket=target==="list1"?state.list1:state.list3;
   if(bucket.some(x=>x.code===code)){ alert("这个列表里已经有了"); return; }
   const known=[...SEED1,...SEED3].find(a=>a[1]===code);
   let name=known?known[0]:((AUTO.items||{})[code]||{}).name||"";
+  if(!name){
+    const btn=$("#addOk1"), old=btn.textContent;
+    btn.textContent="查询名称…"; btn.disabled=true;
+    try{ name = await lookupName(code); }catch(e){}
+    btn.textContent=old; btn.disabled=false;
+  }
   if(!name) name=code;
   bucket.push({id:"x-"+Date.now(), name, code, min:"", unit:10, pe:"", pb:"", mpct:""});
-  save(); dlgAdd.close(); render(); refreshQuotes();
+  save(); dlgAdd.close(); render();
+  // 只为这个新代码拉一次行情，顺便让「无行情/名称」当场见分晓
+  delete failCache[code];
+  try{ putQuote(code, await fetchQuote(code, true)); }catch(e){ putQuote(code, null); }
+  render();
 }
 $("#addOk1").onclick=()=>doAdd("list1");
-$("#addOk3").onclick=()=>doAdd("list3");
+$("#addCode").addEventListener("input", addCodeChanged);
+$("#addSel").addEventListener("change", ()=>{ if($("#addSel").value) $("#addHint").textContent=""; });
 
 $("#add2").onclick=async ()=>{
-  const name=prompt("指数名称"); if(!name) return;
-  const code=prompt("行情代码（886042 / 399296 / sh000300）"); if(!code) return;
+  const code=(prompt("行情代码（886042 / 399673 / sh000300）")||"").trim();
+  if(!code) return;
+  let name=(prompt("指数名称（可留空，自动查询）","")||"").trim();
+  if(!name){
+    name=await lookupName(code);
+    if(!name){ alert("查不到这个代码的名称，请手动填一个"); return; }
+  }
   const high=prompt("近期最高点","");
   state.list2.push({id:"b-"+Date.now(), name, code, high:num(high), unit:1, manual:""});
-  save(); render(); refreshQuotes();
+  save(); render();
+  delete failCache[code];
+  try{ putQuote(code, await fetchQuote(code, true)); }catch(e){}
+  render();
+};
+
+/* 回撤里取不到行情的，单独重拉（不动定投，也不用整页刷新） */
+$("#retry2").onclick=async ()=>{
+  const bad=state.list2.filter(it=>{ const q=quotes[it.code]; return !q || q.err; }).map(it=>it.code);
+  if(!bad.length){ alert("回撤里现在没有无行情的"); return; }
+  bad.forEach(c=>{ delete failCache[c]; delete quotes[c]; });
+  $("#retry2").disabled=true; $("#retry2").textContent="重试中…";
+  try{ await refreshQuotes("dd", true); }finally{ $("#retry2").disabled=false; render(); }
 };
 
 $("#btnBulk").onclick=()=>{ $("#bulkText").value=""; $("#dlgBulk").showModal(); };
@@ -1159,6 +1262,7 @@ function doBulk(target){
     if(pb!==undefined && pb!=="-") it.pb=pb;
   });
   save(); $("#dlgBulk").close(); render(); refreshQuotes();
+  backfillNames();          // 只写了代码的行，自动补中文名
   alert(`新增 ${added} 个，更新 ${updated} 个`);
 }
 $("#bulkOk1").onclick=()=>doBulk("list1");
@@ -1237,44 +1341,67 @@ function priorityCodes(){
   return [...set];
 }
 
+/* 把一条行情写进行情表（统一入口，避免各处字段写岔） */
+function putQuote(c, got){
+  const ok = got && !got.error && got.price>0 && Number.isFinite(+got.price) && Number.isFinite(+got.pct);
+  if(ok){
+    quotes[c]={ price:+got.price, prev:+got.prev||0, pct:+got.pct,
+                date:String(got.date||"").replace(/-/g,""), ts:qTs(got.ts),
+                src:got.src||"代理", at:Date.now() };
+    delete failCache[c];
+    return true;
+  }
+  quotes[c]={ err:(got&&got.error)||"无行情", at:Date.now() };
+  return false;
+}
+/* 边拉边显示：每回来一条就重画一次（200ms 合并），不用等整批拉完 */
+let progTimer=null;
+function renderSoon(){
+  if(progTimer) return;
+  progTimer=setTimeout(()=>{
+    progTimer=null;
+    const a=document.activeElement;
+    // 用户正在某个输入框里打字，就先别重画，等整批结束再统一画
+    if(a && (a.tagName==="INPUT"||a.tagName==="TEXTAREA") && a.closest("#list1,#list2,#list3")) return;
+    render();
+  }, 200);
+}
+
 async function refreshQuotes(scope, force){
   scope = scope || "all";
-  // 定投/回撤优先，监测排在后面，避免一次拉太多把要紧的行情拖慢
   if(scope==="all"){
     await refreshQuotes("priority", force);
-    return refreshQuotes("mon", force);
+    if(SHOW_MON) await refreshQuotes("mon", force);
+    return;
   }
   const codes = scope==="mon"
     ? [...new Set(state.list3.map(x=>x.code))]
-    : scope==="main"
-      ? [...new Set([...state.list1,...state.list2].map(x=>x.code))]
-      : priorityCodes();
+    : scope==="dd"
+      ? [...new Set(state.list2.map(x=>x.code))]
+      : scope==="main"
+        ? [...new Set([...state.list1,...state.list2].map(x=>x.code))]
+        : priorityCodes();
   codes.filter(c=>NO_QUOTE.has(c)).forEach(c=>{ quotes[c]={err:"无行情", at:Date.now()}; });
-  // 90 秒内取过的直接复用
+  // 90 秒内取过的直接复用（失败也复用，避免每轮都去撞取不到的代码）
   const todo=codes.filter(c=>!NO_QUOTE.has(c) && !(quotes[c] && quotes[c].at && Date.now()-quotes[c].at<90000));
   $("#status").textContent = todo.length ? `刷新 0/${todo.length}` : "用缓存";
 
   let done=0, batchNow=0;
   const mark=(c,got,fromBatch)=>{
-    const ok = got && !got.error && got.price>0 && Number.isFinite(+got.price)
-               && Number.isFinite(+got.pct);
-    if(ok && fromBatch && isStale(got.ts, batchNow||undefined)){
+    if(got && fromBatch && !got.error && got.price>0 && isStale(got.ts, batchNow||undefined)){
       // 代理返回的是缓存住的旧价：先标过期，后面走直连重试
       noteProxyStale(got);
       staleQuotes[c]={...got, ts:qTs(got.ts), srvNow:batchNow||0};
       quotes[c]={err:"数据过期", at:Date.now()};
-    }else if(ok){
-      quotes[c]={price:+got.price, prev:+got.prev||0, pct:+got.pct, date:String(got.date||"").replace(/-/g,""),
-                 ts:qTs(got.ts), src:got.src||"代理", at:Date.now()};
-      delete failCache[c];
     }else{
-      quotes[c]={err:"无行情", at:Date.now()};
+      putQuote(c, got);
     }
     done++; $("#status").textContent=`刷新 ${done}/${todo.length}`;
+    renderSoon();                       // ← 来一条画一条
   };
 
   if(canBatch() && todo.length>1){
-    const CH=8;
+    const CH=4;      // 小批：每批回来就画一次，别等一整批
     // 只有「自建代理」的批量结果才检查时间戳：本地 serve.py 是现拉的，没必要
     const batchViaProxy = !!proxyBatchUrl() && proxyUsable();
     for(let i=0;i<todo.length;i+=CH){
@@ -1426,12 +1553,12 @@ $("#btnDiag").onclick=async ()=>{
   showDiag(c.trim().toUpperCase());
 };
 $("#btnRetryAll").onclick=async ()=>{
-  const all=[...state.list1,...state.list2,...state.list3].map(x=>x.code);
-  const bad=[...new Set(all)].filter(c=>quotes[c] && quotes[c].err);
+  const all=[...state.list1,...state.list2].map(x=>x.code);   // 监测已隐藏，不拉它
+  const bad=[...new Set(all)].filter(c=>!quotes[c] || quotes[c].err);
   if(!bad.length){ alert("现在没有无行情的指数"); return; }
-  bad.forEach(c=>delete failCache[c]);
+  bad.forEach(c=>{ delete failCache[c]; delete quotes[c]; });
   alert(`重试 ${bad.length} 个…`);
-  await refreshQuotes("all", true);
+  await refreshQuotes("main", true);
 };
 $("#btnExport").onclick=()=>{
   const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
@@ -1507,6 +1634,22 @@ $("#diagCopy").onclick=async ()=>{
   }
 };
 
+/* 老数据里「名字=代码」的行（比如手填 399673）开机补一次中文名，查不到就保持原样 */
+async function backfillNames(){
+  const targets=[...state.list1,...state.list2]
+    .filter(it=>it && it.code && it.name && it.name===it.code)
+    .slice(0,12);
+  if(!targets.length) return;
+  let changed=false;
+  for(const it of targets){
+    try{
+      const nm=await lookupName(it.code);
+      if(nm && nm!==it.code){ it.name=nm; changed=true; }
+    }catch(e){}
+  }
+  if(changed){ save(); render(); }
+}
+
 /* ---------- 启动 ---------- */
 if($("#verLine")){
   $("#verLine").textContent = `版本 ${VER}　·　文件 ${location.pathname.split("/").pop()||"index.html"}`
@@ -1516,7 +1659,8 @@ restoreQuoteTime();
 render();
 loadPercentiles().then(()=>render());
 checkHashSync();
-// 启动只拉「定投里分位<5 + 回撤」；监测页切过去或手动刷新时才拉
+backfillNames();
+// 启动只拉「定投里分位 <10 + 回撤」；监测已隐藏不再拉
 probeAPI().then(()=>refreshQuotes("priority"));
 </script>
 </body>
