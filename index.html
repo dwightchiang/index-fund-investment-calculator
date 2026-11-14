@@ -186,6 +186,8 @@
       </select>
       <button id="fTodo">只看待填</button>
       <button id="fFill">📝 填表模式</button>
+      <button id="fExpandAll" style="display:none">⤵ 展开全部</button>
+      <button id="fSnap">存档</button>
       <span id="count1" style="font-size:12px;color:var(--dim);margin-left:auto;align-self:center"></span>
     </div>
     <div class="filters" id="retrySegs">
@@ -196,14 +198,12 @@
       <button data-seg="15-20">15-20</button>
       <button data-seg="20+">20+</button>
       <button data-seg="na">无行情</button>
-      <button class="primary" id="btnRetrySegs" style="padding:4px 11px;font-size:12px;border-radius:999px">重试所选</button>
     </div>
     <div class="filters" id="retryPickRow">
-      <span style="font-size:12px;color:var(--dim);align-self:center">已选 <b id="pickCount">0</b> 个</span>
-      <button class="primary" id="btnRetryPick" style="padding:4px 11px;font-size:12px;border-radius:999px">重试所选涨跌</button>
+      <button class="primary" id="btnRetryGo" style="padding:4px 11px;font-size:12px;border-radius:999px">重试所选（0）</button>
       <button id="btnPickAll">全选</button>
       <button id="btnPickNone">清空</button>
-      <span style="font-size:11px;color:#64748b;align-self:center">点行首圆圈选中（可多选），重试只拉涨跌</span>
+      <span style="font-size:11px;color:#64748b;align-self:center">已选 <b id="retryCount">0</b> 个（段+圆圈都算），重试只拉涨跌</span>
     </div>
     <div id="list1"></div>
     <button class="add" id="add1">+ 添加指数</button>
@@ -345,10 +345,19 @@
   </div>
 </dialog>
 
+<dialog id="dlgSnap">
+  <h3 style="margin:0 0 8px;font-size:15px">顺序存档</h3>
+  <p class="note" style="margin:0 0 8px">把当前的「自定义顺序」存一份，随时一键还原。存档会跟着云端同步到其他设备。</p>
+  <input id="snapName" placeholder="存档名称（默认：顺序 MM-DD HH:MM）">
+  <button class="primary" id="snapSave" style="width:100%;margin-top:8px">保存当前顺序</button>
+  <div id="snapList" style="margin-top:10px"></div>
+  <button id="snapClose" style="width:100%;margin-top:10px">关闭</button>
+</dialog>
+
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-14d";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-14e";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 8;
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
@@ -1027,8 +1036,7 @@ function autoYmdOf(it){
    蛋卷自动值以其数据日期 == 最近交易日 为界。 */
 function pctFresh(it, now){
   if(it.min || it.mpctAt){                       // 手填生效（manual 优先）
-    const ts=[it.minAt, it.mpctAt].filter(Boolean)
-      .map(v=>(typeof v==="number")?v:new Date(v.slice(0,10)+"T00:00:00").getTime());
+    const ts=[it.minAt, it.mpctAt].filter(Boolean).map(numMs);
     if(!ts.length) return false;
     return ts.some(ms=>ms>=fillBoundaryMs(now)); // 任一字段在当前数据期内更新过就算新鲜
   }
@@ -1039,19 +1047,25 @@ function pctFresh(it, now){
   }
   return false;                                  // 既没手填也没自动 → 待填
 }
-/* 徽标：只显示图标 ✓ / ! / ?（日期看 ⚙ 展开面板），手机上不再被省略号吃掉 */
+/* 徽标：只显示图标 ✓ / ! / ?，悬停显示「周X数据已更新（日期）」；手机上不被省略号吃掉 */
 function pctBadge(it, now){
   if(it.min){
-    return pctFresh(it, now) ? `<span class="fb fb-ok" title="手填·已更新">✓</span>`
-                             : `<span class="fb fb-stale" title="手填·需更新">!</span>`;
+    const fresh=pctFresh(it, now);
+    const c=it.minAt ? coveredDay(numMs(it.minAt)) : null;
+    const cd=c ? `${WK[c.getDay()]}(${ymd(c).slice(4,6)}-${ymd(c).slice(6,8)})` : "手填";
+    return fresh ? `<span class="fb fb-ok" title="${cd} 数据已更新">✓</span>`
+                 : `<span class="fb fb-stale" title="${cd} 的数据，需更新">!</span>`;
   }
   const ad=autoYmdOf(it);
   if(ad){
     const l=latestTradingDay(now);
-    return (!l || ad>=l) ? `<span class="fb fb-ok" title="蛋卷 ${ad}">✓</span>`
-                         : `<span class="fb fb-stale" title="蛋卷 ${ad} 需更新">!</span>`;
+    const fresh=!l || ad>=l;
+    const wk=WK[new Date(+ad.slice(0,4), +ad.slice(4,6)-1, +ad.slice(6,8)).getDay()];
+    const dd=`${ad.slice(4,6)}-${ad.slice(6,8)}`;
+    return fresh ? `<span class="fb fb-ok" title="蛋卷：${wk}数据已更新（${dd}）">✓</span>`
+                 : `<span class="fb fb-stale" title="蛋卷：${wk}(${dd}) 的数据，需更新">!</span>`;
   }
-  return `<span class="fb fb-none" title="未填">?</span>`;
+  return `<span class="fb fb-none" title="未填分位">?</span>`;
 }
 function isTodo(it){ return !pctFresh(it); }
 function total_all(list){ return list.length; }
@@ -1084,7 +1098,8 @@ function applySort(key){
     arr.sort((a,b)=>f(pair.get(a.code))-f(pair.get(b.code)));
   }
   state.order=arr.map(x=>x.code);
-  save(); render();
+  state.orderAt=Date.now();
+  save(); render(); scheduleCloudPush();
 }
 /* 顺序微调：⚙ 面板里的置顶/上移/下移/移到底部（顺序也可在填表模式拖动） */
 function orderMove(id, act){
@@ -1098,7 +1113,8 @@ function orderMove(id, act){
   else if(act==="up")    state.order.splice(Math.max(0,i-1),0,c);
   else if(act==="down")  state.order.splice(Math.min(state.order.length,i+1),0,c);
   else                   state.order.push(c);          // 移到底部
-  save(); render();
+  state.orderAt=Date.now();
+  save(); render(); scheduleCloudPush();
 }
 /* 手动调序：填表模式里按住 ≡ 自由拖动（触屏/鼠标都支持，交换式） */
 let drag = null;                                   // {id,row,startY,moved}
@@ -1150,7 +1166,7 @@ document.addEventListener("pointerup", ()=>{
   drag.row.style.transform=""; drag.row.style.pointerEvents="";
   drag.row.classList.remove("dragging");
   drag=null;
-  if(moved){ save(); render(); }
+  if(moved){ state.orderAt=Date.now(); save(); render(); scheduleCloudPush(); }
 });
 /* 填表模式：按分位段批量重试行情（暂时隐藏，SHOW_SEG_RETRY 打开后再用） */
 function segCodes(){
@@ -1169,21 +1185,29 @@ function segCodes(){
   });
   return [...set];
 }
-function updateRetrySegBtn(){
-  const b=$("#btnRetrySegs");
-  if(b) b.textContent = retrySegs.size ? `重试所选（${segCodes().length}）` : "重试所选";
+/* 重试目标 = 选中的分位段 ∪ 行首圆圈多选的指数；重试只拉涨跌（行情），不动分位 */
+function retryTargets(){
+  const set=new Set(segCodes());
+  [...pickSet].map(id=>codeById(id)).filter(Boolean).forEach(c=>set.add(c));
+  return [...set];
 }
-async function retrySelected(){
-  const codes=segCodes();
-  if(!codes.length){ alert("先点选分位段（可多选）"); return; }
+function updateRetryUI(){
+  const n=retryTargets().length;
+  const cnt=$("#retryCount"); if(cnt) cnt.textContent=n;
+  const go=$("#btnRetryGo"); if(go) go.classList.toggle("on", n>0);
+  document.querySelectorAll("#retrySegs [data-seg]").forEach(b=>b.classList.toggle("on", retrySegs.has(b.dataset.seg)));
+}
+async function retryGo(){
+  const codes=retryTargets();
+  if(!codes.length){ alert("先选分位段，或点行首圆圈选中指数（都可多选）"); return; }
+  const b=$("#btnRetryGo"); if(b) b.disabled=true;
   codes.forEach(c=>{ delete failCache[c]; delete quotes[c]; });
-  $("#btnRetrySegs").disabled=true;
   try{
     await pool(codes, 4, async c=>{
       try{ putQuote(c, await fetchQuote(c, true)); }catch(e){ putQuote(c, null); }
     });
     render();
-  }finally{ $("#btnRetrySegs").disabled=false; updateRetrySegBtn(); }
+  }finally{ if(b) b.disabled=false; updateRetryUI(); }
 }
 
 function renderSec1(){
@@ -1220,7 +1244,7 @@ function renderSec1(){
         <button class="pick ${pickSet.has(it.id)?"on":""}" data-pick="${it.id}" title="选中，批量重试涨跌"></button>
         <div class="nmcell">
           <div class="nmrow"><span class="nm2">${it.name}</span>${pctBadge(it)}</div>
-          <span class="code2">${it.code}${q?"":` · <span style="color:#f87171" data-diag="${it.code}">无行情·点我</span>`}</span>
+          <span class="code2">${it.code}${q?"":` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`}</span>
         </div>
         <input inputmode="decimal" data-k="min" data-id="${it.id}" value="${it.min??""}" placeholder="分位">
         ${chgCell}
@@ -1412,7 +1436,7 @@ document.addEventListener("click", e=>{
     const id=pk.dataset.pick;
     if(pickSet.has(id)) pickSet.delete(id); else pickSet.add(id);
     pk.classList.toggle("on", pickSet.has(id));
-    updateRetryPick();
+    updateRetryUI();
     return;
   }
   const cmin=e.target.closest("[data-clearmin]");
@@ -1424,16 +1448,34 @@ document.addEventListener("click", e=>{
     }
     return;
   }
+  const su=e.target.closest("[data-snapuse]");
+  if(su){
+    const s=(state.orderSnaps||[])[+su.dataset.snapuse];
+    if(s){
+      state.order=s.codes.filter(c=>state.list1.some(x=>x.code===c));
+      state.orderAt=Date.now();
+      save(); render(); scheduleCloudPush(); dlgSnap.close();
+    }
+    return;
+  }
+  const sd=e.target.closest("[data-snapdel]");
+  if(sd){
+    const i=+sd.dataset.snapdel;
+    if((state.orderSnaps||[])[i]){
+      state.orderSnaps.splice(i,1);
+      save(); renderSnapList(); scheduleCloudPush();
+    }
+    return;
+  }
   const seg=e.target.closest("[data-seg]");
   if(seg){
     const s=seg.dataset.seg;
     if(retrySegs.has(s)) retrySegs.delete(s); else retrySegs.add(s);
-    seg.classList.toggle("on", retrySegs.has(s));
-    updateRetrySegBtn();
+    updateRetryUI();
     return;
   }
-  const rseg=e.target.closest("#btnRetrySegs");
-  if(rseg){ retrySelected(); return; }
+  const rgo=e.target.closest("#btnRetryGo");
+  if(rgo){ retryGo(); return; }
   const mv=e.target.closest("[data-move]");
   if(mv){ moveTo(mv.dataset.move, state.list1, state.list3); return; }
   const push=e.target.closest("[data-push]");
@@ -1469,6 +1511,16 @@ function todayStr(){
   return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
 }
 function deviceName(){ return /Mobi|Android|iPhone/i.test(navigator.userAgent) ? "手机" : "电脑"; }
+/* 手填值覆盖的交易日（按 15:00 分界，工作日近似）——用于徽标悬停提示 */
+function coveredDay(ms){
+  const d=new Date(ms);
+  if(d.getHours()*100+d.getMinutes()>=1500) return d;
+  d.setDate(d.getDate()-1);
+  while(d.getDay()===0||d.getDay()===6) d.setDate(d.getDate()-1);
+  return d;
+}
+const WK=["周日","周一","周二","周三","周四","周五","周六"];
+function numMs(v){ return (typeof v==="number")?v:new Date(String(v).slice(0,10)+"T00:00:00").getTime(); }
 
 document.addEventListener("input", e=>{
   const inp=e.target;
@@ -1554,7 +1606,7 @@ async function doAdd(target){
   if(!name) name=code;
   const it={id:"x-"+Date.now(), name, code, min:"", unit:10, pe:"", pb:"", mpct:"", rev:0};
   bucket.push(it);
-  if(bucket===state.list1){ ensureOrder(); state.order.push(code); }
+  if(bucket===state.list1){ ensureOrder(); state.order.unshift(code); }   // 新加的放最上面
   save(); dlgAdd.close(); render();
   // 只为这个新代码拉一次行情，顺便让「无行情/名称」当场见分晓
   delete failCache[code];
@@ -1574,7 +1626,7 @@ $("#add2").onclick=async ()=>{
     if(!name){ alert("查不到这个代码的名称，请手动填一个"); return; }
   }
   const high=prompt("近期最高点","");
-  state.list2.push({id:"b-"+Date.now(), name, code, high:num(high), unit:1, manual:""});
+  state.list2.unshift({id:"b-"+Date.now(), name, code, high:num(high), unit:1, manual:""});
   save(); render();
   delete failCache[code];
   try{ putQuote(code, await fetchQuote(code, true)); }catch(e){}
@@ -1595,6 +1647,7 @@ $("#bulkCancel").onclick=()=>$("#dlgBulk").close();
 function doBulk(target){
   const bucket=target==="list1"?state.list1:state.list3;
   let added=0, updated=0;
+  const newCodes=[];
   $("#bulkText").value.split("\n").forEach(line=>{
     const p=line.trim().split(/[\s,，\t]+/).filter(Boolean);
     if(!p.length) return;
@@ -1610,12 +1663,13 @@ function doBulk(target){
       it={id:"x-"+Math.random().toString(36).slice(2,8), name:name||(known?known[0]:code),
           code, min:"", unit:10, pe:"", pb:"", mpct:""};
       bucket.push(it); added++;
-      if(bucket===state.list1){ ensureOrder(); state.order.push(code); }
+      if(bucket===state.list1) newCodes.unshift(code);   // 批量导入的也放最上面（保持输入顺序）
     }
     it.rev=Date.now();
     if(pe!==undefined && pe!=="-"){ if(bucket===state.list1) it.min=pe; else it.pe=pe; }
     if(pb!==undefined && pb!=="-") it.pb=pb;
   });
+  if(newCodes.length){ ensureOrder(); state.order=[...newCodes, ...state.order]; }
   save(); $("#dlgBulk").close(); render(); refreshQuotes();
   backfillNames();          // 只写了代码的行，自动补中文名
   scheduleCloudPush();      // 批量导入的分位也推云端
@@ -1825,6 +1879,9 @@ function packState(){
   if(state.proxy)  o.px=state.proxy;
   if(state.pctUrl) o.pu=state.pctUrl;
   if(state.sort && state.sort!=="order") o.so=state.sort;   // 排序偏好（顺序本身不跨设备同步）
+  if(Array.isArray(state.order) && state.order.length) o.od=state.order.slice();
+  if(state.orderAt) o.oa=state.orderAt;
+  if(state.orderSnaps && state.orderSnaps.length) o.os=state.orderSnaps;
   return o;
 }
 function unpackState(o){
@@ -1848,6 +1905,11 @@ function unpackState(o){
       x.minAt=a[7]||0; x.mpctAt=a[8]||0; x.rev=a[9]||0; });
     st.list2.forEach((x,i)=>{ x.rev=o.l2[i][5]||0; });
     st.list3.forEach((x,i)=>{ x.rev=o.l3[i][4]||0; });
+    if(Array.isArray(o.od)){
+      st.order=o.od.filter(c=>st.list1.some(x=>x.code===c));
+      st.orderAt=o.oa||0;
+    }
+    if(Array.isArray(o.os)) st.orderSnaps=o.os;
   }
   return st;
 }
@@ -1865,6 +1927,45 @@ function applySync(text){
   probeAPI().then(()=>refreshQuotes("all", true));
   return true;
 }
+
+/* ---------- 顺序存档（保存 / 备份 / 还原自定义顺序） ---------- */
+const dlgSnap=$("#dlgSnap");
+function snapDefaultName(){
+  const d=new Date();
+  return `顺序 ${d.getMonth()+1}-${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+}
+function renderSnapList(){
+  const el=$("#snapList"); if(!el) return;
+  const snaps=state.orderSnaps||[];
+  if(!snaps.length){ el.innerHTML=`<p class="note" style="margin:0">还没有存档。整理好顺序后点上面的「保存当前顺序」。</p>`; return; }
+  el.innerHTML=snaps.map((s,i)=>{
+    const d=new Date(s.at||0);
+    const when=`${d.getMonth()+1}-${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+    return `<div style="display:flex;gap:6px;align-items:center;padding:5px 0;border-bottom:1px solid #26334a">
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        ${s.name} <span style="color:#64748b;font-size:11px">（${when} · ${s.codes.length} 个）</span>
+      </span>
+      <button class="mini" data-snapuse="${i}">应用</button>
+      <button class="mini" data-snapdel="${i}" style="color:#f87171">删除</button>
+    </div>`;
+  }).join("");
+}
+$("#fSnap").onclick=()=>{
+  ensureOrder();
+  $("#snapName").value="";
+  renderSnapList();
+  try{ dlgSnap.showModal(); }catch(e){}
+};
+$("#snapClose").onclick=()=>dlgSnap.close();
+$("#snapSave").onclick=()=>{
+  ensureOrder();
+  const name=($("#snapName").value.trim())||snapDefaultName();
+  state.orderSnaps=state.orderSnaps||[];
+  state.orderSnaps=state.orderSnaps.filter(s=>s.name!==name);   // 同名覆盖
+  state.orderSnaps.push({name, codes:state.order.slice(), at:Date.now()});
+  state.orderAt=Date.now();
+  save(); renderSnapList(); scheduleCloudPush();
+};
 
 /* ---------- 云端自动同步（手填值） ----------
    存到本仓库 data/user-state.json（GitHub Contents API）。
@@ -1926,7 +2027,18 @@ function cloudPack(){
       items[sec][it.code]=o;
     });
   });
-  return { v:1, updatedAt: Date.now(), device: deviceName(), items };
+  return { v:1, updatedAt: Date.now(), device: deviceName(), items,
+           order: Array.isArray(state.order)? state.order : [],
+           orderAt: state.orderAt||0,
+           orderSnaps: state.orderSnaps||[] };
+}
+function mergeSnaps(a, b){
+  const map=new Map();
+  [...(a||[]), ...(b||[])].forEach(s=>{
+    const old=map.get(s.name);
+    if(!old || (s.at||0) >= (old.at||0)) map.set(s.name, s);
+  });
+  return [...map.values()].sort((x,y)=>(y.at||0)-(x.at||0));
 }
 function cloudMerge(remote){
   let applied=0;
@@ -1989,13 +2101,24 @@ async function cloudPull(){
     const cur = await cloudRead();
     if(!cur){ cloudErr=""; cloudSetStatus("云端还没有存档"); return; }
     applyingRemote = true;
-    const n = cloudMerge(cur.content);
+    let n = cloudMerge(cur.content);
+    // 顺序：哪台设备整理得晚用哪台的
+    if(Array.isArray(cur.content.order) && (cur.content.orderAt||0) > (state.orderAt||0)){
+      const valid=cur.content.order.filter(c=>state.list1.some(x=>x.code===c));
+      if(valid.length){ state.order=valid; state.orderAt=cur.content.orderAt||0; n++; }
+    }
+    // 顺序存档：按名称合并，时间新者胜，两边独有的都保留
+    if(Array.isArray(cur.content.orderSnaps)){
+      const before=(state.orderSnaps||[]).length;
+      state.orderSnaps=mergeSnaps(state.orderSnaps, cur.content.orderSnaps);
+      if(state.orderSnaps.length!==before) n++;
+    }
     applyingRemote = false;
     cloudErr="";
     state.cloudLast = Object.assign({}, state.cloudLast,
       { down:Date.now(), remoteAt:cur.content.updatedAt, device:cur.content.device });
     save();
-    if(n){ render(); cloudSetStatus(`已从云端应用 ${n} 条手填值（来自 ${cur.content.device||"其他设备"}）`); }
+    if(n){ render(); cloudSetStatus(`已从云端应用 ${n} 项更新（手填值/顺序/存档，来自 ${cur.content.device||"其他设备"}）`); }
     else cloudSetStatus();
   }catch(e){
     applyingRemote=false;
@@ -2056,15 +2179,26 @@ function checkHashSync(){
 $("#toggle1").onclick=()=>{ onlyHit=!onlyHit; renderSec1(); };
 /* 排序 / 待填筛选 / 填表模式 */
 function updateFilters1(){
-  const sel=$("#sortSel"), b2=$("#fTodo"), b3=$("#fFill");
+  const sel=$("#sortSel"), b2=$("#fTodo"), b3=$("#fFill"), b4=$("#fExpandAll");
   if(!sel) return;
   sel.value = state.sort || "order";
   b2.classList.toggle("on", onlyTodo);
   b3.textContent = fillMode ? "退出填表模式" : "📝 填表模式";
   b3.classList.toggle("on", fillMode);
+  if(b4){
+    b4.style.display = fillMode ? "" : "none";     // 展开全部只在填表模式里有意义
+    const allOpen = state.list1.length>0 && state.list1.every(it=>openPanels.has(it.id));
+    b4.textContent = allOpen ? "⤴ 收起全部" : "⤵ 展开全部";
+  }
 }
 $("#sortSel").addEventListener("change", ()=>{ applySort($("#sortSel").value); });
 $("#fTodo").onclick=()=>{ onlyTodo=!onlyTodo; updateFilters1(); render(); };
+$("#fExpandAll").onclick=()=>{
+  const allOpen = state.list1.length>0 && state.list1.every(it=>openPanels.has(it.id));
+  if(allOpen) openPanels.clear();
+  else state.list1.forEach(it=>openPanels.add(it.id));
+  updateFilters1(); render();
+};
 $("#fFill").onclick=()=>{
   fillMode=!fillMode;
   if(fillMode){
@@ -2074,27 +2208,26 @@ $("#fFill").onclick=()=>{
     autoOn=prevAuto; onlyTodo=false; state.sort=prevSort;
     $("#btnAuto").textContent="自动刷新："+(autoOn?"盘中":"关");
   }
-  save(); updateFilters1(); render(); updateRetryPick();
+  const rs=$("#retrySegs"), rp=$("#retryPickRow");
+  if(rs) rs.style.display = fillMode ? "none" : "flex";   // 填表时重试工具收起来
+  if(rp) rp.style.display = fillMode ? "none" : "flex";
+  save(); updateFilters1(); render(); updateRetryUI();
 };
-function updateRetryPick(){
-  const n=pickSet.size, el=$("#pickCount");
+function updateRetryUI(){
+  const n=retryTargets().length, el=$("#retryCount");
   if(el) el.textContent=n;
-  const b=$("#btnRetryPick");
-  if(b) b.classList.toggle("on", n>0);
+  const b=$("#btnRetryGo");
+  if(b){ b.textContent=`重试所选（${n}）`; b.classList.toggle("on", n>0); }
 }
-$("#btnPickAll").onclick=()=>{ state.list1.forEach(it=>pickSet.add(it.id)); render(); updateRetryPick(); };
-$("#btnPickNone").onclick=()=>{ pickSet.clear(); render(); updateRetryPick(); };
-$("#btnRetryPick").onclick=async ()=>{
-  const codes=[...pickSet].map(id=>codeById(id)).filter(Boolean);
-  if(!codes.length){ alert("先点行右侧的圆圈选中指数（可多选）"); return; }
-  $("#btnRetryPick").disabled=true;
-  codes.forEach(c=>{ delete failCache[c]; delete quotes[c]; });
-  try{
-    await pool(codes, 4, async c=>{
-      try{ putQuote(c, await fetchQuote(c, true)); }catch(e){ putQuote(c, null); }
-    });
-    pickSet.clear(); render(); updateRetryPick();
-  }finally{ $("#btnRetryPick").disabled=false; }
+/* 全选 = 分位段全选 + 行圆圈全选；清空 = 两边都清 */
+$("#btnPickAll").onclick=()=>{
+  ["0-5","5-10","10-15","15-20","20+","na"].forEach(s=>retrySegs.add(s));
+  state.list1.forEach(it=>pickSet.add(it.id));
+  updateRetryUI(); render();
+};
+$("#btnPickNone").onclick=()=>{
+  retrySegs.clear(); pickSet.clear();
+  updateRetryUI(); render();
 };
 $("#btnRefresh").onclick=async ()=>{
   if(tab==="s3"){ await loadPercentiles(true); render(); refreshQuotes("mon", true); }
@@ -2215,6 +2348,7 @@ async function backfillNames(){
 /* ---------- 启动 ---------- */
 if(!state.sort) state.sort="order";
 ensureOrder();
+updateRetryUI();
 if($("#verLine")){
   $("#verLine").textContent = `版本 ${VER}　·　文件 ${location.pathname.split("/").pop()||"index.html"}`
     + (proxyBase()? `　·　代理 ${proxyBase()}` : "　·　未设代理（直连）");

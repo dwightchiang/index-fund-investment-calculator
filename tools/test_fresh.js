@@ -13,6 +13,7 @@ let quotes = {};
 let AUTO = { updated: "", items: {} };
 function txCode(c){ return c; }
 function ymd(d){ return ""+d.getFullYear()+String(d.getMonth()+1).padStart(2,"0")+String(d.getDate()).padStart(2,"0"); }
+function numMs(v){ return (typeof v==="number")?v:new Date(String(v).slice(0,10)+"T00:00:00").getTime(); }
 ${slice("function closeMs", "function fillFresh")}
 ${slice("function latestTradingDay", "function pctBadge")}
 module.exports = {
