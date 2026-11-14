@@ -171,9 +171,17 @@
     </div>
     <div class="ptime2" id="t1time">行情 —</div>
     <div class="filters" id="filters1">
-      <button id="fSort">排序：分位↑</button>
+      <span style="font-size:12px;color:var(--dim);align-self:center">排序</span>
+      <select id="sortSel" style="width:auto;padding:4px 8px;font-size:12px;border-radius:999px">
+        <option value="order">清单顺序</option>
+        <option value="pctile">分位 ↑（低在前）</option>
+        <option value="name">名称（拼音）</option>
+        <option value="pct">涨跌幅（跌多在前）</option>
+        <option value="amt">金额（大在前）</option>
+      </select>
       <button id="fTodo">只看待填</button>
       <button id="fFill">📝 填表模式</button>
+      <span id="count1" style="font-size:12px;color:var(--dim);margin-left:auto;align-self:center"></span>
     </div>
     <div id="list1"></div>
     <button class="add" id="add1">+ 添加指数</button>
@@ -364,7 +372,7 @@ const NO_QUOTE = new Set(["000958", "005012"]);
 let AUTO = { updated:"", items:{} };
 let state = load();
 let quotes = {};
-let autoOn = true, onlyHit = false, onlyTodo = false, fillMode = false, prevAuto = true, prevSort = "min", monFilter = "all", tab = "s1";
+let autoOn = true, onlyHit = false, onlyTodo = false, fillMode = false, prevAuto = true, prevSort = "order", monFilter = "all", tab = "s1";
 const openPanels = new Set();   // ⚙ 展开的面板，重绘后保持打开
 
 function mk(list, prefix, extra){
@@ -943,31 +951,101 @@ function dateLabel(d){
 /* 手填状态：蛋卷覆盖的指数不需要手填 → 不显示徽标 */
 function hasAutoPct(it){ const {pe,pb}=effPct(it); return pe!==null||pb!==null; }
 function needsManual(it){ return !hasAutoPct(it); }
+
+/* 「这条手填值还新鲜吗」—— 以最近一次收盘为界：
+   - 今天开市且还没到 15:00 → 界限 = 上一交易日 15:00（周末/假期里填的都算数）
+   - 今天开市且已过 15:00   → 界限 = 今天 15:00（下一个交易日要用今天收盘后的新数据）
+   - 今天休市（周末/假期）  → 界限 = 最近交易日 15:00（假期里填的都算数）
+   最近交易日从行情返回的日期推断，不用维护节假日表。 */
+function ymd(d){ return ""+d.getFullYear()+String(d.getMonth()+1).padStart(2,"0")+String(d.getDate()).padStart(2,"0"); }
+function closeMs(day){
+  if(!day || day.length<8) return 0;
+  return new Date(+day.slice(0,4), +day.slice(4,6)-1, +day.slice(6,8), 15, 0, 0).getTime();
+}
+function fillBoundaryMs(now){
+  now = now || new Date();
+  const dates=[...new Set(Object.values(quotes).filter(q=>q&&q.date).map(q=>q.date))].sort();
+  const today=ymd(now);
+  const beforeOpen = now.getHours()*100+now.getMinutes() < 1500;
+  const latest = dates.length ? dates[dates.length-1] : "";
+  if(latest===today && beforeOpen){
+    const prev=dates.filter(x=>x<today).pop();
+    if(prev) return closeMs(prev);
+    const d=new Date(now); d.setDate(d.getDate()-1);   // 行情里还没有更早的记录 → 按工作日推
+    while(d.getDay()===0||d.getDay()===6) d.setDate(d.getDate()-1);
+    return closeMs(ymd(d));
+  }
+  if(latest===today) return closeMs(today);            // 已过 15:00，下一阶段用今天收盘后的数据
+  if(latest) return closeMs(latest);                   // 今天休市（周末/假期）
+  const d=new Date(now); d.setDate(d.getDate()-1);     // 完全没有行情 → 退化为上一工作日
+  while(d.getDay()===0||d.getDay()===6) d.setDate(d.getDate()-1);
+  return closeMs(ymd(d));
+}
+function fillFresh(it, now){
+  const v = it.minAt || it.mpctAt;
+  if(!v) return false;
+  const ms = (typeof v==="number") ? v
+    : new Date(v.slice(0,10)+"T00:00:00").getTime();        // 旧格式（只有日期）→ 当天 0 点，视为过期
+  return ms >= fillBoundaryMs(now);
+}
 function fillBadge(it){
   if(!needsManual(it)) return "";
-  if(!it.min) return `<span class="fb fb-none">未填</span>`;
-  if(it.minAt===todayStr()) return `<span class="fb fb-ok">✅今天</span>`;
-  return `<span class="fb fb-stale">⚠️${(it.minAt||"").slice(5)||"已填"}</span>`;
+  const v = it.minAt || it.mpctAt;
+  if(!v && !it.min) return `<span class="fb fb-none">未填</span>`;
+  const d = (typeof v==="number") ? ymd(new Date(v)) : String(v||"").slice(0,10).replace(/-/g,"");
+  const dd = d ? `${d.slice(4,6)}-${d.slice(6,8)}` : "";
+  return fillFresh(it) ? `<span class="fb fb-ok">✅${dd||"已填"}</span>`
+                       : `<span class="fb fb-stale">⚠️${dd||"已填"} 需更新</span>`;
 }
-function isTodo(it){ return needsManual(it) && (!it.min || it.minAt!==todayStr()); }
+function isTodo(it){ return needsManual(it) && !fillFresh(it); }
+function total_all(list){ return list.length; }
+function count1(){
+  return { total: state.list1.length, todo: state.list1.filter(isTodo).length };
+}
+
+/* 展示顺序：state.order 是「代码数组」，点排序时生成一次，之后保持稳定不重排 */
+function ensureOrder(){
+  if(!Array.isArray(state.order)) state.order=state.list1.map(x=>x.code);
+  state.list1.forEach(x=>{ if(!state.order.includes(x.code)) state.order.push(x.code); });
+  state.order=state.order.filter(c=>state.list1.some(x=>x.code===c));
+}
+function applySort(key){
+  state.sort=key;
+  ensureOrder();
+  const arr=state.order.map(c=>state.list1.find(x=>x.code===c)).filter(Boolean);
+  const rows=arr.map(it=>({it,r:calc1(it)}));
+  const pair=new Map(rows.map(p=>[p.it.code,p]));
+  const keyOf={
+    pctile:p=>p.r.min===null?1e9:p.r.min,
+    name:  p=>p.it.name,
+    pct:   p=>p.r.chg.pct===null?1e9:p.r.chg.pct,     // 跌得多在前
+    amt:   p=>-(p.r.amount||0),                       // 金额大在前，0/负在后
+  };
+  if(key==="name") arr.sort((a,b)=>a.name.localeCompare(b.name,"zh"));
+  else if(key==="order") arr.sort((a,b)=>state.order.indexOf(a.code)-state.order.indexOf(b.code));
+  else{
+    const f=keyOf[key]||keyOf.pctile;
+    arr.sort((a,b)=>f(pair.get(a.code))-f(pair.get(b.code)));
+  }
+  state.order=arr.map(x=>x.code);
+  save(); render();
+}
 
 function renderSec1(){
   const box=$("#list1");
-  const rows=state.list1.map(it=>({it,r:calc1(it)}));
-  if(state.sortMode!=="fixed"){
-    rows.sort((a,b)=>{
-      const av=a.r.min===null?1e9:a.r.min, bv=b.r.min===null?1e9:b.r.min;
-      return av-bv;
-    });
-  }
+  ensureOrder();
+  const rows=state.order.map(c=>state.list1.find(x=>x.code===c)).filter(Boolean)
+    .map(it=>({it,r:calc1(it)}));
   let shown=rows;
   if(onlyHit) shown=shown.filter(x=>x.r.tag==="hit");
   if(onlyTodo) shown=shown.filter(x=>isTodo(x.it));
   $("#toggle1").textContent = onlyHit ? "显示全部" : "只看 <5";
   $("#toggle1").classList.toggle("on", onlyHit);
+  const c=count1(), ce=$("#count1");
+  if(ce) ce.textContent=`共 ${c.total} · 待填 ${c.todo}`;
 
   if(!shown.length){
-    box.innerHTML=`<div class="empty">${onlyTodo?"没有待填的指数（都填过且是今天填的）":(onlyHit?"没有低于 5 的指数":"还没有指数，点下面添加")}</div>`;
+    box.innerHTML=`<div class="empty">${onlyTodo?"没有待填的指数（都在有效期内）":(onlyHit?"没有低于 5 的指数":"还没有指数，点下面添加")}</div>`;
     return;
   }
   box.innerHTML=shown.map(({it,r})=>{
@@ -978,7 +1056,8 @@ function renderSec1(){
     const chgCell = q
       ? `<div class="chg ${cls}">${pctTxt}</div>`
       : `<input inputmode="decimal" data-k="mpct" data-id="${it.id}" value="${it.mpct??""}" placeholder="涨跌%">`;
-    const manualNote = it.mpctAt ? ` · 手填涨跌 ${it.mpctAt}` : (it.minAt ? ` · 手填分位 ${it.minAt}` : "");
+    const fmtAt=v=>{ if(!v) return ""; const d=new Date(typeof v==="number"?v:String(v).slice(0,10)+"T12:00:00"); return `${d.getMonth()+1}-${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; };
+    const manualNote = it.mpctAt ? ` · 手填涨跌 ${fmtAt(it.mpctAt)}` : (it.minAt ? ` · 手填分位 ${fmtAt(it.minAt)}` : "");
     return `<div class="row ${r.tag}" data-id="${it.id}">
       <div class="grid">
         <div class="nmcell">
@@ -1169,6 +1248,8 @@ function askDelete(id, bucket, label){
   if(!it) return;
   if(!confirm(`从「${label}」里删除「${it.name}」？\n删除后可以点「恢复默认」再补回来。`)) return;
   bucket.splice(bucket.findIndex(x=>x.id===id),1);
+  if(bucket===state.list1 && Array.isArray(state.order))
+    state.order=state.order.filter(c=>c!==it.code);        // 同步维护展示顺序
   save(); render();
 }
 function moveTo(id, from, to){
@@ -1193,8 +1274,8 @@ document.addEventListener("input", e=>{
   if(!it) return;
   it[inp.dataset.k]=inp.value;
   it.rev=Date.now();                        // 云端合并用：这条手填记录的更新时间
-  if(inp.dataset.k==="min"){ if(inp.value==="") delete it.minAt; else it.minAt=todayStr(); }
-  if(inp.dataset.k==="mpct"){ if(inp.value==="") delete it.mpctAt; else it.mpctAt=todayStr(); }
+  if(inp.dataset.k==="min"){ if(inp.value==="") delete it.minAt; else it.minAt=Date.now(); }
+  if(inp.dataset.k==="mpct"){ if(inp.value==="") delete it.mpctAt; else it.mpctAt=Date.now(); }
   save();
   if(inp.classList.contains("chip")){ inp.className="chip "+chipClass(num(inp.value)); }
   softRefresh();
@@ -1268,7 +1349,9 @@ async function doAdd(target){
     btn.textContent=old; btn.disabled=false;
   }
   if(!name) name=code;
-  bucket.push({id:"x-"+Date.now(), name, code, min:"", unit:10, pe:"", pb:"", mpct:""});
+  const it={id:"x-"+Date.now(), name, code, min:"", unit:10, pe:"", pb:"", mpct:"", rev:0};
+  bucket.push(it);
+  if(bucket===state.list1){ ensureOrder(); state.order.push(code); }
   save(); dlgAdd.close(); render();
   // 只为这个新代码拉一次行情，顺便让「无行情/名称」当场见分晓
   delete failCache[code];
@@ -1324,6 +1407,7 @@ function doBulk(target){
       it={id:"x-"+Math.random().toString(36).slice(2,8), name:name||(known?known[0]:code),
           code, min:"", unit:10, pe:"", pb:"", mpct:""};
       bucket.push(it); added++;
+      if(bucket===state.list1){ ensureOrder(); state.order.push(code); }
     }
     it.rev=Date.now();
     if(pe!==undefined && pe!=="-"){ if(bucket===state.list1) it.min=pe; else it.pe=pe; }
@@ -1537,26 +1621,32 @@ function packState(){
   };
   if(state.proxy)  o.px=state.proxy;
   if(state.pctUrl) o.pu=state.pctUrl;
-  if(state.sortMode && state.sortMode!=="min") o.sm=state.sortMode;
+  if(state.sort && state.sort!=="order") o.so=state.sort;   // 排序偏好（顺序本身不跨设备同步）
   return o;
 }
 function unpackState(o){
   const v=o.v||1;
   const l1a=a=>({id:"y1-"+Math.random().toString(36).slice(2,8), name:a[0], code:a[1],
-    min:a[2]??"", unit:a[3]??10, pe:a[4]??"", pb:a[5]??"", mpct:a[6]??"",
-    minAt:(v>=2?(a[7]||""):""), mpctAt:(v>=2?(a[8]||""):""), rev:(v>=2?(a[9]||0):0)});
+    min:a[2]??"", unit:a[3]??10, pe:a[4]??"", pb:a[5]??"", mpct:a[6]??""});
   const l2a=a=>({id:"y2-"+Math.random().toString(36).slice(2,8), name:a[0], code:a[1],
-    high:a[2]??"", unit:a[3]??1, manual:a[4]??"", rev:(v>=2?(a[5]||0):0)});
+    high:a[2]??"", unit:a[3]??1, manual:a[4]??""});
   const l3a=a=>({id:"y3-"+Math.random().toString(36).slice(2,8), name:a[0], code:a[1],
-    min:"", unit:10, pe:a[2]??"", pb:a[3]??"", mpct:"", rev:(v>=2?(a[4]||0):0)});
-  return {
+    min:"", unit:10, pe:a[2]??"", pb:a[3]??"", mpct:""});
+  const st={
     seedVer: SEED_VER,
     list1:(o.l1||[]).map(l1a),
     list2:(o.l2||[]).map(l2a),
     list3:(o.l3||[]).map(l3a),
-    sortMode: v>=2 ? (o.sm||"min") : "min",
+    sort: v>=2 ? (o.so||"order") : "order",
     proxy:o.px||"", pctUrl:o.pu||"", last:{}, src:{}
   };
+  if(v>=2){
+    st.list1.forEach((x,i)=>{ const a=o.l1[i];
+      x.minAt=a[7]||0; x.mpctAt=a[8]||0; x.rev=a[9]||0; });
+    st.list2.forEach((x,i)=>{ x.rev=o.l2[i][5]||0; });
+    st.list3.forEach((x,i)=>{ x.rev=o.l3[i][4]||0; });
+  }
+  return st;
 }
 function makeSyncCode(){ return b64enc(JSON.stringify(packState())); }
 function applySync(text){
@@ -1580,7 +1670,7 @@ function applySync(text){
    token 只存本机 localStorage（dca-cloud-token），不进 state / 同步码 / 导出文件。 */
 const CLOUD_FILE = "data/user-state.json";
 const CLOUD_TOKEN_KEY = "dca-cloud-token";
-let cloudBusy = false, cloudTimer = null, applyingRemote = false;
+let cloudBusy = false, cloudTimer = null, applyingRemote = false, cloudErr = "";
 
 function cloudToken(){ return (localStorage.getItem(CLOUD_TOKEN_KEY)||"").trim(); }
 function cloudRepo(){
@@ -1763,26 +1853,22 @@ function checkHashSync(){
 $("#toggle1").onclick=()=>{ onlyHit=!onlyHit; renderSec1(); };
 /* 排序 / 待填筛选 / 填表模式 */
 function updateFilters1(){
-  const b1=$("#fSort"), b2=$("#fTodo"), b3=$("#fFill");
-  if(!b1) return;
-  b1.textContent = state.sortMode==="fixed" ? "排序：固定" : "排序：分位↑";
-  b1.classList.toggle("on", state.sortMode==="fixed");
+  const sel=$("#sortSel"), b2=$("#fTodo"), b3=$("#fFill");
+  if(!sel) return;
+  sel.value = state.sort || "order";
   b2.classList.toggle("on", onlyTodo);
   b3.textContent = fillMode ? "退出填表模式" : "📝 填表模式";
   b3.classList.toggle("on", fillMode);
 }
-$("#fSort").onclick=()=>{
-  state.sortMode = state.sortMode==="fixed" ? "min" : "fixed";
-  save(); updateFilters1(); render();
-};
+$("#sortSel").addEventListener("change", ()=>{ applySort($("#sortSel").value); });
 $("#fTodo").onclick=()=>{ onlyTodo=!onlyTodo; updateFilters1(); render(); };
 $("#fFill").onclick=()=>{
   fillMode=!fillMode;
   if(fillMode){
-    prevAuto=autoOn; prevSort=state.sortMode;
-    autoOn=false; onlyTodo=true; state.sortMode="fixed";
+    prevAuto=autoOn; prevSort=state.sort||"order";
+    autoOn=false; onlyTodo=true;
   }else{
-    autoOn=prevAuto; onlyTodo=false; state.sortMode=prevSort;
+    autoOn=prevAuto; onlyTodo=false; state.sort=prevSort;
     $("#btnAuto").textContent="自动刷新："+(autoOn?"盘中":"关");
   }
   save(); updateFilters1(); render();
@@ -1839,7 +1925,7 @@ $("#fileImport").onchange=async e=>{
 };
 $("#btnReset").onclick=()=>{
   if(!confirm("恢复默认清单？已填的分位会丢失。（云端存档里的手填值也会在下次同步时提示恢复）")) return;
-  localStorage.removeItem(KEY); state=load(); if(!state.sortMode) state.sortMode="min"; quotes={}; save(); render(); refreshQuotes();
+  localStorage.removeItem(KEY); state=load(); if(!state.sort) state.sort="order"; quotes={}; save(); render(); refreshQuotes();
 };
 $("#btnAuto").onclick=()=>{ autoOn=!autoOn; $("#btnAuto").textContent="自动刷新："+(autoOn?"盘中":"关"); };
 $("#btnCopy").onclick=async ()=>{
@@ -1912,7 +1998,8 @@ async function backfillNames(){
 }
 
 /* ---------- 启动 ---------- */
-if(!state.sortMode) state.sortMode="min";
+if(!state.sort) state.sort="order";
+ensureOrder();
 if($("#verLine")){
   $("#verLine").textContent = `版本 ${VER}　·　文件 ${location.pathname.split("/").pop()||"index.html"}`
     + (proxyBase()? `　·　代理 ${proxyBase()}` : "　·　未设代理（直连）");
