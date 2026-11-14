@@ -359,7 +359,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-14f";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-14g";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 8;
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
@@ -398,8 +398,9 @@ const SEED2 = [
   ["存储芯片","886042",3716.55,1],["创成长","399296",10634.62,1],["科创成长","1B0690",3455.64,1]
 ];
 
-/* 默认展示顺序：按同花顺自选的原有顺序（截图 2026-11-14），截图里没有的排末尾 */
-const SEED_ORDER = ["931152", "1B0690", "980092", "886042", "H11136", "1B0932", "399975", "930641", "399997", "399296", "000985", "KWEB", "931139", "931068", "HS2083", "950090", "000919", "1B0905", "930743", "399989", "000922", "164906", "980017"];
+/* 默认展示顺序：按同花顺自选（截图 2026-11-14 从上到下，37 个）。
+   清单里没有的代码会被 ensureOrder/迁移自动跳过。 */
+const SEED_ORDER = ["931152", "930901", "QQQ", "000813", "NDX", "980138", "399808", "931719", "931247", "930713", "931079", "399976", "931071", "399295", "399673", "1B0852", "399006", "1B0690", "980092", "886042", "H11136", "1B0932", "399975", "930641", "399997", "399296", "000985", "KWEB", "931139", "931068", "HS2083", "950090", "000919", "1B0905", "930743", "399989", "000922"];
 /* 已知取不到行情的代码：直接跳过，省时间（其余都会按 腾讯→雪球→东财→同花顺 依次尝试） */
 const NO_QUOTE = new Set(["000958", "005012"]);
 
@@ -1091,7 +1092,7 @@ function ensureOrder(){
 }
 /* 一次性迁移：把「同花顺原顺序」（截图 2026-11-14）应用到现有清单，并存一份存档。
    只跑一次（state.orderVer 记住）。截图里没有的代码按原相对顺序排到末尾。 */
-const ORDER_VER = 1;
+const ORDER_VER = 2;   // 2 = 按截图 2026-11-14 的 37 个顺序
 function applyOrderMigration(){
   if((state.orderVer||0) >= ORDER_VER) return;
   const have=new Set(state.list1.map(x=>x.code));
@@ -1101,7 +1102,7 @@ function applyOrderMigration(){
   state.orderAt=Date.now();
   state.orderVer=ORDER_VER;
   state.orderSnaps=state.orderSnaps||[];
-  if(!state.orderSnaps.some(s=>s.name==="同花顺原顺序")){
+  if(!state.orderSnaps.some(s=>s.name==="同花顺原顺序 11-14")){
     state.orderSnaps.push({name:"同花顺原顺序", codes:state.order.slice(), at:Date.now()});
   }
   save();
@@ -1196,36 +1197,55 @@ document.addEventListener("pointerup", ()=>{
   drag=null;
   if(moved){ state.orderAt=Date.now(); save(); render(); scheduleCloudPush(); }
 });
-/* 填表模式：按分位段批量重试行情（暂时隐藏，SHOW_SEG_RETRY 打开后再用） */
-function segCodes(){
-  const set=new Set();
-  state.list1.forEach(it=>{
-    const q=quotes[it.code];
-    if(retrySegs.has("na") && (!q || q.err)) set.add(it.code);
-    const m=minPctOf(it);
-    if(m!==null){
-      if(m<5        && retrySegs.has("0-5"))  set.add(it.code);
-      else if(m<10  && retrySegs.has("5-10")) set.add(it.code);
-      else if(m<15  && retrySegs.has("10-15")) set.add(it.code);
-      else if(m<20  && retrySegs.has("15-20")) set.add(it.code);
-      else if(m>=20 && retrySegs.has("20+"))   set.add(it.code);
-    }
-  });
-  return [...set];
+/* 分位段：按「生效分位」划分（手填优先，其次蛋卷）。
+   —— 没有更新/过期的也算进去，只看数值；完全没有分位数据的返回 null。 */
+const SEG_KEYS = ["0-5","5-10","10-15","15-20","20+"];
+function segOf(it){
+  const m = minPctOf(it);
+  if(m===null) return null;
+  if(m<5)  return "0-5";
+  if(m<10) return "5-10";
+  if(m<15) return "10-15";
+  if(m<20) return "15-20";
+  return "20+";
 }
-/* 重试目标 = 选中的分位段 ∪ 行首圆圈多选的指数；重试只拉涨跌（行情），不动分位 */
+function segLabel(k){ return k==="na" ? "无行情" : k; }
+/* 这一行是否被「分位段」选中（含无行情段） */
+function segSel(it){
+  if(retrySegs.has("na")){
+    const q=quotes[it.code];
+    if(!q || q.err) return true;
+  }
+  const k=segOf(it);
+  return k!==null && retrySegs.has(k);
+}
+/* 这一行是否被选中（段选中 或 圆圈点选） */
+function rowSel(it){ return segSel(it) || pickSet.has(it.id); }
+/* 重试目标 = 段选中的 ∪ 圆圈点选的；只拉涨跌，不动分位 */
 function retryTargets(){
-  const set=new Set(segCodes());
-  [...pickSet].map(id=>codeById(id)).filter(Boolean).forEach(c=>set.add(c));
-  return [...set];
+  return state.list1.filter(rowSel).map(x=>x.code);
+}
+/* 各段的实际数量（用于按钮上显示，让你一眼看到筛选结果） */
+function segCounts(){
+  const o={ "0-5":0,"5-10":0,"10-15":0,"15-20":0,"20+":0,"na":0 };
+  state.list1.forEach(it=>{
+    const k=segOf(it);
+    if(k) o[k]++;
+    const q=quotes[it.code];
+    if(!q || q.err) o.na++;
+  });
+  return o;
 }
 function updateRetryUI(){
   const n=retryTargets().length;
   const b=$("#btnRetryGo");
   if(b){ b.textContent=`重试所选（${n}）`; b.disabled=false; }
-  // 分位段按钮的高亮必须在这里统一刷 —— 之前被另一个同名函数覆盖，点了不变色
+  const c=segCounts();
   document.querySelectorAll("#retrySegs [data-seg]").forEach(x=>{
-    x.classList.toggle("on", retrySegs.has(x.dataset.seg));
+    const k=x.dataset.seg;
+    x.classList.toggle("on", retrySegs.has(k));
+    const base=segLabel(k);
+    x.textContent = retrySegs.has(k) ? `${base} (${c[k]})` : base;
   });
 }
 async function retryGo(){
@@ -1272,7 +1292,7 @@ function renderSec1(){
     const manualNote = (it.mpctAt ? ` · 手填涨跌 ${fmtAt(it.mpctAt)}` : (it.minAt ? ` · 手填分位 ${fmtAt(it.minAt)}` : "")) + autoNote;
     return `<div class="row ${r.tag}" data-id="${it.id}">
       <div class="grid">
-        <button class="pick ${pickSet.has(it.id)?"on":""}" data-pick="${it.id}" title="选中，批量重试涨跌"></button>
+        <button class="pick ${rowSel(it)?"on":""}" data-pick="${it.id}" title="${segSel(it)?"已按分位段选中":(pickSet.has(it.id)?"已选中":"点选中，批量重试涨跌")}"></button>
         <div class="nmcell">
           <div class="nmrow"><span class="nm2">${it.name}</span>${pctBadge(it)}</div>
           <span class="code2">${it.code}${q?"":` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`}</span>
@@ -1502,7 +1522,7 @@ document.addEventListener("click", e=>{
   if(seg){
     const s=seg.dataset.seg;
     if(retrySegs.has(s)) retrySegs.delete(s); else retrySegs.add(s);
-    updateRetryUI();
+    updateRetryUI(); render();        // 重画：行首圆圈跟着段的选中状态一起变
     return;
   }
   const rgo=e.target.closest("#btnRetryGo");
