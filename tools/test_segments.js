@@ -15,15 +15,17 @@ let AUTO = { items: {} };
 let state = { list1: [], last: {} };
 let retrySegs = new Set();
 let pickSet = new Set();
+let onlyNaFilter = false;
 function num(v){ if(v===null||v===undefined||v==="") return null; const n=+v; return Number.isFinite(n)?n:null; }
 function txCode(c){ return c; }
 ${slice("function effPct", "function remember")}
 ${slice("const SEG_KEYS", "function updateRetryUI")}
 module.exports = {
-  segOf, segSel, rowSel, retryTargets, segCounts, minPctOf,
-  set: (list, q, segs, picks) => {
+  segOf, segSel, rowSel, retryTargets, segCounts, minPctOf, noQuote,
+  set: (list, q, segs, picks, onlyNa) => {
     state.list1 = list; quotes = q||{};
     retrySegs = new Set(segs||[]); pickSet = new Set(picks||[]);
+    onlyNaFilter = !!onlyNa;
   },
 };
 `;
@@ -104,6 +106,20 @@ check("全选（含无行情）总数", m.retryTargets().length, 7);
 m.set(list, q2, ALLSEG.filter(k => k !== "na"), []);
 check("取消无行情后 C7 不再选中", m.rowSel(list[6]), false);
 check("取消无行情后不含 C7", m.retryTargets().includes("C7"), false);
+
+// —— 交集模式「限无行情」：只更新「0-5 段里没有行情的」
+// C1 没行情、C2 有行情，都在 0-5 段
+const q3 = { C2:{pct:-1}, C3:{pct:-1}, C4:{pct:-1}, C5:{pct:-1}, C6:{pct:-1}, C7:{pct:-1}, C8:{pct:-1} };
+m.set(list, q3, ["0-5"], [], true);
+check("限无行情 + 0-5 → 只剩没行情的 C1", m.retryTargets(), ["C1"]);
+m.set(list, q3, ["0-5"], [], false);
+check("不限时 0-5 → C1 C2 都要", m.retryTargets(), ["C1","C2"]);
+// 交集模式下只勾「无行情」= 所有没行情的
+m.set(list, q3, ["na"], [], true);
+check("限无行情 + 只勾无行情 → 所有没行情的", m.retryTargets(), ["C1"]);
+// 交集模式下什么都不勾 → 空
+m.set(list, q3, [], [], true);
+check("限无行情 + 未勾任何段 → 空", m.retryTargets(), []);
 
 console.log(bad ? `\n${bad} 项不符合预期` : "\n全部通过");
 process.exit(bad ? 1 : 0);

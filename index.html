@@ -201,6 +201,7 @@
       <button data-seg="na">无行情</button>
       <button id="btnPickAll">全选</button>
       <button id="btnPickNone">清空</button>
+      <button id="btnOnlyNa" title="打开后：分位段与「无行情」取交集，只选「该段里没有行情的」">限无行情</button>
       <button class="primary" id="btnRetryGo" style="margin-left:auto;padding:4px 11px;font-size:12px;border-radius:999px">重试</button>
     </div>
     <div class="filters" id="retryPickRow" style="display:none"></div>
@@ -356,7 +357,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-14h";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-14i";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 8;
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
@@ -407,7 +408,8 @@ let state = load();
 let quotes = {};
 let autoOn = true, onlyHit = false, onlyTodo = false, fillMode = false, prevAuto = true, prevSort = "order", monFilter = "all", tab = "s1";
 const openPanels = new Set();   // ⚙ 展开的面板，重绘后保持打开
-const retrySegs  = new Set();   // 分位段选择（暂时隐藏，SHOW_SEG_RETRY 打开后再用）
+let retrySegs  = new Set();   // 分位段选择（0-5/5-10/…/na）
+let onlyNaFilter = false;     // 「限无行情」：分位段与无行情取交集
 const pickSet    = new Set();   // 填表模式里多选的指数（批量重试涨跌）
 
 function mk(list, prefix, extra){
@@ -1207,14 +1209,22 @@ function segOf(it){
   return "20+";
 }
 function segLabel(k){ return k==="na" ? "无行情" : k; }
-/* 这一行是否被「分位段」选中（含无行情段） */
+function noQuote(it){ const q=quotes[it.code]; return !q || !!q.err; }
+/* 这一行是否被「分位段」选中。
+   默认是并集（选了 0-5 就全要）；勾上「限无行情」变成交集（0-5 且没行情）。
+   —— 这就是「只更新 0-5 段里没行情的」那个用法。 */
 function segSel(it){
-  if(retrySegs.has("na")){
-    const q=quotes[it.code];
-    if(!q || q.err) return true;
-  }
   const k=segOf(it);
-  return k!==null && retrySegs.has(k);
+  const inSeg = k!==null && retrySegs.has(k);
+  const naSel = retrySegs.has("na");
+  if(onlyNaFilter){
+    // 交集模式：「无行情」是必选条件，分位段用来进一步收窄
+    if(!noQuote(it)) return false;
+    if(!naSel && !inSeg) return false;
+    return true;
+  }
+  if(naSel && noQuote(it)) return true;
+  return inSeg;
 }
 /* 这一行是否被选中（段选中 或 圆圈点选） */
 function rowSel(it){ return segSel(it) || pickSet.has(it.id); }
@@ -1228,8 +1238,7 @@ function segCounts(){
   state.list1.forEach(it=>{
     const k=segOf(it);
     if(k) o[k]++;
-    const q=quotes[it.code];
-    if(!q || q.err) o.na++;
+    if(noQuote(it)) o.na++;
   });
   return o;
 }
@@ -1238,13 +1247,21 @@ function updateRetryUI(){
   const n=retryTargets().length;
   const b=$("#btnRetryGo");
   if(b){ b.textContent=`重试（${n}）`; b.disabled=false; }
+  if(n===0){ /* 全部取消选中，按钮仍在，点它会提示 */ }
   const c=segCounts();
+  // 交集模式下各段数量要按「无行情」过滤后的真实数量显示
+  const cntOf=(k)=>{
+    if(!onlyNaFilter) return c[k];
+    return state.list1.filter(it=>noQuote(it) && (segOf(it)===k || k==="na")).length;
+  };
   document.querySelectorAll("#retrySegs [data-seg]").forEach(x=>{
     const k=x.dataset.seg;
     x.classList.toggle("on", retrySegs.has(k));
     const base=segLabel(k);
-    x.textContent = retrySegs.has(k) ? `${base} ${c[k]}` : base;
+    x.textContent = retrySegs.has(k) ? `${base} ${cntOf(k)}` : base;
   });
+  const on=$("#btnOnlyNa");
+  if(on) on.classList.toggle("on", onlyNaFilter);
 }
 /* 全选：只置位分位段（不往 pickSet 里塞），这样取消某段时数量会正确跟着变 */
 $("#btnPickAll").onclick=()=>{
@@ -1256,17 +1273,38 @@ $("#btnPickNone").onclick=()=>{
   retrySegs.clear(); pickSet.clear();
   updateRetryUI(); render();
 };
+$("#btnOnlyNa").onclick=()=>{
+  onlyNaFilter=!onlyNaFilter;
+  $("#btnOnlyNa").classList.toggle("on", onlyNaFilter);
+  updateRetryUI(); render();
+};
 async function retryGo(){
   const codes=retryTargets();
   if(!codes.length){ alert("先选分位段，或点行首圆圈选中指数（都可多选）"); return; }
-  const b=$("#btnRetryGo"); if(b) b.disabled=true;
+  const b=$("#btnRetryGo");
+  let done=0, okCnt=0, naCnt=0;
+  const paint=(txt)=>{ if(b) b.textContent=txt; };
+  if(b) b.disabled=true;
   codes.forEach(c=>{ delete failCache[c]; delete quotes[c]; });
+  paint(`重试中 0/${codes.length}`);
   try{
     await pool(codes, 4, async c=>{
-      try{ putQuote(c, await fetchQuote(c, true)); }catch(e){ putQuote(c, null); }
+      let got=null;
+      try{ got=await fetchQuote(c, true); }catch(e){}
+      putQuote(c, got);
+      if(got && !got.error && got.price>0) okCnt++; else naCnt++;
+      done++;
+      paint(`重试中 ${done}/${codes.length}`);
+      renderSoon();                 // 边拉边出，能看到进度和逐行变化
     });
+    paint(`重试完成 ${okCnt}✓ ${naCnt?naCnt+"✗":""}`.trim());
     render();
-  }finally{ if(b) b.disabled=false; updateRetryUI(); }
+    setTimeout(()=>{ if(b) b.disabled=false; updateRetryUI(); }, 1500);
+  }catch(e){
+    if(b) b.disabled=false;
+    updateRetryUI();
+    alert("重试出错："+(e.message||e));
+  }
 }
 
 function renderSec1(){
