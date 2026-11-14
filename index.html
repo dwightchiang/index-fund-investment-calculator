@@ -92,11 +92,12 @@
   .filters button{padding:4px 11px;font-size:12px;border-radius:999px}
   .filters button.on{background:var(--accent);color:#04263a;border-color:var(--accent);font-weight:600}
 
-  /* 手填状态徽标：✅今天 / ⚠️过期 / ⬜未填 */
-  .fb{font-size:10px;padding:1px 5px;border-radius:5px;white-space:nowrap;font-weight:600}
-  .fb-ok{background:rgba(34,197,94,.15);color:var(--green)}
-  .fb-stale{background:rgba(245,158,11,.15);color:var(--amber)}
-  .fb-none{background:rgba(148,163,184,.15);color:var(--gray)}
+  /* 手填状态徽标：只显示图标，✓=新鲜 / ! =需更新 / ?=未填（放在独立行不被截断） */
+  .fb{flex:none;font-size:12px;line-height:1;padding:1px 4px;border-radius:5px;font-weight:700}
+  .fb-ok{color:var(--green)}
+  .fb-stale{color:var(--amber)}
+  .fb-none{color:#64748b}
+  .nmrow{display:flex;align-items:center;gap:5px;min-width:0}
   .mon{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
   .mon .hd,.mon .it{display:grid;grid-template-columns:1.2fr .8fr .8fr .75fr 1.05fr;
       gap:4px;padding:7px 9px;font-size:13px;align-items:center}
@@ -173,7 +174,7 @@
     <div class="filters" id="filters1">
       <span style="font-size:12px;color:var(--dim);align-self:center">排序</span>
       <select id="sortSel" style="width:auto;padding:4px 8px;font-size:12px;border-radius:999px">
-        <option value="order">清单顺序</option>
+        <option value="order">自定义顺序</option>
         <option value="pctile">分位 ↑（低在前）</option>
         <option value="name">名称（拼音）</option>
         <option value="pct">涨跌幅（跌多在前）</option>
@@ -182,6 +183,16 @@
       <button id="fTodo">只看待填</button>
       <button id="fFill">📝 填表模式</button>
       <span id="count1" style="font-size:12px;color:var(--dim);margin-left:auto;align-self:center"></span>
+    </div>
+    <div class="filters" id="retrySegs" style="display:none">
+      <span style="font-size:12px;color:var(--dim);align-self:center">重试行情</span>
+      <button data-seg="0-5">0-5</button>
+      <button data-seg="5-10">5-10</button>
+      <button data-seg="10-15">10-15</button>
+      <button data-seg="15-20">15-20</button>
+      <button data-seg="20+">20+</button>
+      <button data-seg="na">无行情</button>
+      <button class="primary" id="btnRetrySegs" style="padding:4px 11px;font-size:12px;border-radius:999px">重试所选</button>
     </div>
     <div id="list1"></div>
     <button class="add" id="add1">+ 添加指数</button>
@@ -229,7 +240,6 @@
     <div class="row" style="padding:12px">
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button id="btnReload">重新拉分位</button>
-        <button id="btnRetryAll">重试所有无行情</button>
         <button id="btnDiag">行情诊断</button>
         <button id="btnBulk">批量导入/改分位</button>
         <button id="btnExport">导出配置</button>
@@ -327,7 +337,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-14a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-14b";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 8;
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
@@ -374,6 +384,7 @@ let state = load();
 let quotes = {};
 let autoOn = true, onlyHit = false, onlyTodo = false, fillMode = false, prevAuto = true, prevSort = "order", monFilter = "all", tab = "s1";
 const openPanels = new Set();   // ⚙ 展开的面板，重绘后保持打开
+const retrySegs  = new Set();   // 填表模式里选中的分位段（用于批量重试行情）
 
 function mk(list, prefix, extra){
   return list.map((a,i)=>Object.assign({
@@ -948,11 +959,7 @@ function dateLabel(d){
   return `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`+(d===today?"":"（上一交易日）");
 }
 
-/* 手填状态：蛋卷覆盖的指数不需要手填 → 不显示徽标 */
-function hasAutoPct(it){ const {pe,pb}=effPct(it); return pe!==null||pb!==null; }
-function needsManual(it){ return !hasAutoPct(it); }
-
-/* 「这条手填值还新鲜吗」—— 以最近一次收盘为界：
+/* 「这条分位数据还新鲜吗」—— 以最近一次收盘为界：
    - 今天开市且还没到 15:00 → 界限 = 上一交易日 15:00（周末/假期里填的都算数）
    - 今天开市且已过 15:00   → 界限 = 今天 15:00（下一个交易日要用今天收盘后的新数据）
    - 今天休市（周末/假期）  → 界限 = 最近交易日 15:00（假期里填的都算数）
@@ -988,16 +995,52 @@ function fillFresh(it, now){
     : new Date(v.slice(0,10)+"T00:00:00").getTime();        // 旧格式（只有日期）→ 当天 0 点，视为过期
   return ms >= fillBoundaryMs(now);
 }
-function fillBadge(it){
-  if(!needsManual(it)) return "";
-  const v = it.minAt || it.mpctAt;
-  if(!v && !it.min) return `<span class="fb fb-none">未填</span>`;
-  const d = (typeof v==="number") ? ymd(new Date(v)) : String(v||"").slice(0,10).replace(/-/g,"");
-  const dd = d ? `${d.slice(4,6)}-${d.slice(6,8)}` : "";
-  return fillFresh(it) ? `<span class="fb fb-ok">✅${dd||"已填"}</span>`
-                       : `<span class="fb fb-stale">⚠️${dd||"已填"} 需更新</span>`;
+/* 最近交易日（YYYYMMDD）：从行情返回的日期推断；没有行情时按工作日退化 */
+function latestTradingDay(now){
+  now = now || new Date();
+  const dates=[...new Set(Object.values(quotes).filter(q=>q&&q.date).map(q=>q.date))].sort();
+  if(dates.length) return dates[dates.length-1];
+  const d=new Date(now);
+  if(d.getHours()*100+d.getMinutes()<1500) d.setDate(d.getDate()-1);
+  while(d.getDay()===0||d.getDay()===6) d.setDate(d.getDate()-1);
+  return ymd(d);
 }
-function isTodo(it){ return needsManual(it) && !fillFresh(it); }
+/* 蛋卷自动分位的数据日期（YYYYMMDD），没有则 "" */
+function autoYmdOf(it){
+  const a=(AUTO.items||{})[it.code]||(AUTO.items||{})[txCode(it.code)]||{};
+  return a.date ? String(a.date).replace(/-/g,"") : "";
+}
+/* 「这条分位数据还新鲜吗」—— 手填值以填入时间 vs 最近收盘为界；
+   蛋卷自动值以其数据日期 == 最近交易日 为界。 */
+function pctFresh(it, now){
+  if(it.min || it.mpctAt){                       // 手填生效（manual 优先）
+    const ts=[it.minAt, it.mpctAt].filter(Boolean)
+      .map(v=>(typeof v==="number")?v:new Date(v.slice(0,10)+"T00:00:00").getTime());
+    if(!ts.length) return false;
+    return ts.some(ms=>ms>=fillBoundaryMs(now)); // 任一字段在当前数据期内更新过就算新鲜
+  }
+  const ad=autoYmdOf(it);
+  if(ad){
+    const l=latestTradingDay(now);
+    return !l || ad>=l;                          // 蛋卷数据已更新到最近交易日
+  }
+  return false;                                  // 既没手填也没自动 → 待填
+}
+/* 徽标：只显示图标 ✓ / ! / ?（日期看 ⚙ 展开面板），手机上不再被省略号吃掉 */
+function pctBadge(it, now){
+  if(it.min){
+    return pctFresh(it, now) ? `<span class="fb fb-ok" title="手填·已更新">✓</span>`
+                             : `<span class="fb fb-stale" title="手填·需更新">!</span>`;
+  }
+  const ad=autoYmdOf(it);
+  if(ad){
+    const l=latestTradingDay(now);
+    return (!l || ad>=l) ? `<span class="fb fb-ok" title="蛋卷 ${ad}">✓</span>`
+                         : `<span class="fb fb-stale" title="蛋卷 ${ad} 需更新">!</span>`;
+  }
+  return `<span class="fb fb-none" title="未填">?</span>`;
+}
+function isTodo(it){ return !pctFresh(it); }
 function total_all(list){ return list.length; }
 function count1(){
   return { total: state.list1.length, todo: state.list1.filter(isTodo).length };
@@ -1030,6 +1073,52 @@ function applySort(key){
   state.order=arr.map(x=>x.code);
   save(); render();
 }
+/* 手动微调顺序（⚙ 面板里的置顶/上移/下移），与同花顺自选股的排序习惯一致 */
+function orderMove(id, act){
+  ensureOrder();
+  const it=state.list1.find(x=>x.id===id);
+  if(!it) return;
+  const i=state.order.indexOf(it.code);
+  if(i<0) return;
+  const [c]=state.order.splice(i,1);
+  if(act==="top")        state.order.unshift(c);
+  else if(act==="up")    state.order.splice(Math.max(0,i-1),0,c);
+  else                   state.order.splice(Math.min(state.order.length,i+1),0,c);
+  save(); render();
+}
+/* 填表模式：按分位段批量重试行情 */
+function segCodes(){
+  const set=new Set();
+  state.list1.forEach(it=>{
+    const q=quotes[it.code];
+    if(retrySegs.has("na") && (!q || q.err)) set.add(it.code);
+    const m=minPctOf(it);
+    if(m!==null){
+      if(m<5        && retrySegs.has("0-5"))  set.add(it.code);
+      else if(m<10  && retrySegs.has("5-10")) set.add(it.code);
+      else if(m<15  && retrySegs.has("10-15")) set.add(it.code);
+      else if(m<20  && retrySegs.has("15-20")) set.add(it.code);
+      else if(m>=20 && retrySegs.has("20+"))   set.add(it.code);
+    }
+  });
+  return [...set];
+}
+function updateRetrySegBtn(){
+  const b=$("#btnRetrySegs");
+  if(b) b.textContent = retrySegs.size ? `重试所选（${segCodes().length}）` : "重试所选";
+}
+async function retrySelected(){
+  const codes=segCodes();
+  if(!codes.length){ alert("先点选分位段（可多选）"); return; }
+  codes.forEach(c=>{ delete failCache[c]; delete quotes[c]; });
+  $("#btnRetrySegs").disabled=true;
+  try{
+    await pool(codes, 4, async c=>{
+      try{ putQuote(c, await fetchQuote(c, true)); }catch(e){ putQuote(c, null); }
+    });
+    render();
+  }finally{ $("#btnRetrySegs").disabled=false; updateRetrySegBtn(); }
+}
 
 function renderSec1(){
   const box=$("#list1");
@@ -1057,11 +1146,13 @@ function renderSec1(){
       ? `<div class="chg ${cls}">${pctTxt}</div>`
       : `<input inputmode="decimal" data-k="mpct" data-id="${it.id}" value="${it.mpct??""}" placeholder="涨跌%">`;
     const fmtAt=v=>{ if(!v) return ""; const d=new Date(typeof v==="number"?v:String(v).slice(0,10)+"T12:00:00"); return `${d.getMonth()+1}-${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; };
-    const manualNote = it.mpctAt ? ` · 手填涨跌 ${fmtAt(it.mpctAt)}` : (it.minAt ? ` · 手填分位 ${fmtAt(it.minAt)}` : "");
+    const autoD=autoYmdOf(it);
+    const autoNote = (!it.min && autoD) ? ` · 蛋卷 ${autoD.slice(4,6)}-${autoD.slice(6,8)}` : "";
+    const manualNote = (it.mpctAt ? ` · 手填涨跌 ${fmtAt(it.mpctAt)}` : (it.minAt ? ` · 手填分位 ${fmtAt(it.minAt)}` : "")) + autoNote;
     return `<div class="row ${r.tag}" data-id="${it.id}">
       <div class="grid">
         <div class="nmcell">
-          <span class="nm2">${it.name} ${fillBadge(it)}</span>
+          <div class="nmrow"><span class="nm2">${it.name}</span>${pctBadge(it)}</div>
           <span class="code2">${it.code}${q?"":` · <span style="color:#f87171" data-diag="${it.code}">无行情·点我</span>`}</span>
         </div>
         <input inputmode="decimal" data-k="min" data-id="${it.id}" value="${it.min??""}" placeholder="分位">
@@ -1079,6 +1170,12 @@ function renderSec1(){
         <div><label>状态</label><div style="font-size:12px;color:var(--dim);padding-top:8px">${r.text} · ${
           chg.date ? dateLabel(chg.date)+" "+(chg.src||"") : (chg.err || (chg.src? chg.src+"（实时）" : ""))
         }${manualNote}</div></div>
+        <div style="grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap">
+          <button class="mini" data-top="${it.id}">⤒ 置顶</button>
+          <button class="mini" data-up="${it.id}">↑ 上移</button>
+          <button class="mini" data-down="${it.id}">↓ 下移</button>
+          ${it.min?`<button class="mini" data-clearmin="${it.id}" title="清掉手填分位，改用蛋卷自动分位">清除手填</button>`:""}
+        </div>
       </div>
     </div>`;
   }).join("");
@@ -1231,6 +1328,31 @@ document.addEventListener("click", e=>{
     }
     return;
   }
+  const otop=e.target.closest("[data-top]");
+  if(otop){ orderMove(otop.dataset.top,"top"); return; }
+  const oup=e.target.closest("[data-up]");
+  if(oup){ orderMove(oup.dataset.up,"up"); return; }
+  const odown=e.target.closest("[data-down]");
+  if(odown){ orderMove(odown.dataset.down,"down"); return; }
+  const cmin=e.target.closest("[data-clearmin]");
+  if(cmin){
+    const it=state.list1.find(x=>x.id===cmin.dataset.clearmin);
+    if(it && confirm(`清除「${it.name}」的手填分位？\n清除后改用蛋卷自动分位（如果它有覆盖）。`)){
+      delete it.min; delete it.minAt; it.rev=Date.now();
+      save(); render(); scheduleCloudPush();
+    }
+    return;
+  }
+  const seg=e.target.closest("[data-seg]");
+  if(seg){
+    const s=seg.dataset.seg;
+    if(retrySegs.has(s)) retrySegs.delete(s); else retrySegs.add(s);
+    seg.classList.toggle("on", retrySegs.has(s));
+    updateRetrySegBtn();
+    return;
+  }
+  const rseg=e.target.closest("#btnRetrySegs");
+  if(rseg){ retrySelected(); return; }
   const mv=e.target.closest("[data-move]");
   if(mv){ moveTo(mv.dataset.move, state.list1, state.list3); return; }
   const push=e.target.closest("[data-push]");
@@ -1864,11 +1986,16 @@ $("#sortSel").addEventListener("change", ()=>{ applySort($("#sortSel").value); }
 $("#fTodo").onclick=()=>{ onlyTodo=!onlyTodo; updateFilters1(); render(); };
 $("#fFill").onclick=()=>{
   fillMode=!fillMode;
+  const segRow=$("#retrySegs");
   if(fillMode){
     prevAuto=autoOn; prevSort=state.sort||"order";
     autoOn=false; onlyTodo=true;
+    if(segRow) segRow.style.display="flex";
   }else{
     autoOn=prevAuto; onlyTodo=false; state.sort=prevSort;
+    retrySegs.clear();
+    document.querySelectorAll("#retrySegs [data-seg]").forEach(b=>b.classList.remove("on"));
+    if(segRow) segRow.style.display="none";
     $("#btnAuto").textContent="自动刷新："+(autoOn?"盘中":"关");
   }
   save(); updateFilters1(); render();
@@ -1898,14 +2025,6 @@ $("#btnDiag").onclick=async ()=>{
   const c=prompt("要诊断的代码（如 931139 / H30269 / KWEB）","931139");
   if(!c) return;
   showDiag(c.trim().toUpperCase());
-};
-$("#btnRetryAll").onclick=async ()=>{
-  const all=[...state.list1,...state.list2].map(x=>x.code);   // 监测已隐藏，不拉它
-  const bad=[...new Set(all)].filter(c=>!quotes[c] || quotes[c].err);
-  if(!bad.length){ alert("现在没有无行情的指数"); return; }
-  bad.forEach(c=>{ delete failCache[c]; delete quotes[c]; });
-  alert(`重试 ${bad.length} 个…`);
-  await refreshQuotes("main", true);
 };
 $("#btnExport").onclick=()=>{
   const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
