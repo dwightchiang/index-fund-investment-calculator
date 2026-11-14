@@ -618,6 +618,7 @@ const failCache = {};   // 本次会话里确定取不到的，先跳过；手�
 let API_OK = null;      // 本地代理 /api/quote 是否可用（用 serve.py 跑时可用）
 let API_STATUS = "未检测";
 let proxyDownUntil = 0; // 代理连不上时，一段时间内不再尝试（避免每次卡 20 秒）
+let proxyFailStreak = 0; // 连续网络失败次数：单个代码超时不拉黑整个代理
 let proxyStale = null;  // 代理返回过旧价时记一笔，界面上提示「代理延迟」
 const staleQuotes = {}; // 每个代码最近一次拿到的「过期报价」，直连也失败时用它兜底
 const PROXY_COOL = 5*60*1000;
@@ -701,11 +702,18 @@ async function fetchQuote(code, force){
   if(!force && failCache[key]) throw new Error("无行情");
   // 1) 自建代理（Cloudflare Worker / 自己的服务器）
   if(proxyUsable()){
-    try{ const r=await fetchViaProxy(key); delete failCache[key]; return r; }
+    try{ const r=await fetchViaProxy(key); delete failCache[key]; proxyFailStreak=0; return r; }
     catch(e){
       const m=String(e.message||"");
-      // 网络层挂了（连不上/超时）→ 冷却 5 分钟；业务 404 / 数据过期不冷却
-      if(!m.startsWith("proxy-")) proxyDownUntil = Date.now()+PROXY_COOL;
+      // 数据过期（proxy-stale）→ 短暂冷却，改走直连
+      // 业务 404（proxy-<code> 取不到）→ **不冷却**，只影响这一个代码
+      // 网络层挂了（连不上/超时）→ 连续 2 次才冷却 5 分钟
+      // 关键：批量重试时单个代码超时不应把整个代理拉黑，否则同批其余代码全被降级
+      if(m==="proxy-stale"){ proxyDownUntil = Date.now()+120000; }
+      else if(m && !m.startsWith("proxy-")){
+        proxyFailStreak++;
+        if(proxyFailStreak>=2){ proxyDownUntil = Date.now()+PROXY_COOL; proxyFailStreak=0; }
+      }
     }
   }
   // 2) 本地代理（serve.py 提供）
@@ -1282,24 +1290,32 @@ async function retryGo(){
   const codes=retryTargets();
   if(!codes.length){ alert("先选分位段，或点行首圆圈选中指数（都可多选）"); return; }
   const b=$("#btnRetryGo");
-  let done=0, okCnt=0, naCnt=0;
+  let done=0, okCnt=0, naCnt=0, viaProxy=0;
   const paint=(txt)=>{ if(b) b.textContent=txt; };
   if(b) b.disabled=true;
   codes.forEach(c=>{ delete failCache[c]; delete quotes[c]; });
+  proxyDownUntil=0; proxyFailStreak=0;   // 手动重试 = 明确要用代理，先解除冷却
   paint(`重试中 0/${codes.length}`);
   try{
-    await pool(codes, 4, async c=>{
+    await pool(codes, 3, async c=>{
       let got=null;
-      try{ got=await fetchQuote(c, true); }catch(e){}
+      // 代理可用时直接走代理（诊断里能拿到，这里也必须能拿到）；
+      // 代理对这个代码失败再退回 fetchQuote 的完整链路
+      if(proxyUsable()){
+        try{ got=await fetchViaProxy(c); viaProxy++; }catch(e){}
+      }
+      if(!got){
+        try{ got=await fetchQuote(c, true); }catch(e){}
+      }
       putQuote(c, got);
       if(got && !got.error && got.price>0) okCnt++; else naCnt++;
       done++;
       paint(`重试中 ${done}/${codes.length}`);
       renderSoon();                 // 边拉边出，能看到进度和逐行变化
     });
-    paint(`重试完成 ${okCnt}✓ ${naCnt?naCnt+"✗":""}`.trim());
+    paint(`重试完成 ${okCnt}✓${naCnt?" "+naCnt+"✗":""}${viaProxy?" · 代理"+viaProxy:""}`);
     render();
-    setTimeout(()=>{ if(b) b.disabled=false; updateRetryUI(); }, 1500);
+    setTimeout(()=>{ if(b) b.disabled=false; updateRetryUI(); }, 1800);
   }catch(e){
     if(b) b.disabled=false;
     updateRetryUI();
