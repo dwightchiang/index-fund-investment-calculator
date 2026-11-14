@@ -1,0 +1,23 @@
+# ---- 临时/缓存 ----
+.tmp/
+out/
+__pycache__/
+*.pyc
+*.pyo
+
+# ---- 压缩包/导出物 ----
+*.rar
+*.zip
+github.rar
+
+# ---- 本机运行产物 ----
+*.log
+*.db
+*.sqlite
+
+# ---- 编辑器/系统 ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+

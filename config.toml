@@ -1,0 +1,119 @@
+# =====================================================================
+#  指数估值定投 · 配置文件
+#  修改后无需改代码，直接运行  python -m dca calc
+# =====================================================================
+
+[strategy]
+# —— 触发条件 ——
+trigger = 5.0            # 任一指标 10 年分位 < 5 才进入定投（百分数）
+window_years = 10        # 分位统计窗口（年）
+
+# —— 金额公式 ——
+#   score  = (5 - 最低分位值) + 当日跌幅（当日上涨则减去涨幅）
+#   amount = unit_amount × score × multiplier
+unit_amount = 10.0       # 每 1 分对应的基准金额（元/分）
+multiplier = 1.0         # 额外倍数（保守=0.5，激进=2）
+min_amount = 10.0        # 单指数单日最低金额
+max_amount = 500.0       # 单指数单日最高金额
+round_amount_to = 10.0   # 金额取整到 10 元
+daily_budget = 0.0       # 全指数当日预算上限，0 表示不限制；超出则按比例缩放
+round_to_lot = false     # true 时按 ETF 100 份取整（需要填 etf 代码）
+
+[data]
+metrics = ["pe", "pb", "ps"]     # 参与打分的指标；拿不到 ps 时可先写 ["pe","pb"]
+method = "rank_le"               # 分位算法：rank_le / rank_lt / mean_rank
+min_points = 60                  # 历史样本少于该数量时不计算分位
+
+[notify]
+channel = "console"      # console / wecom / dingtalk / serverchan / email
+webhook = ""             # 企业微信、钉钉、Server酱 的地址
+smtp_host = ""           # 邮件方式才需要
+smtp_port = 465
+smtp_user = ""
+smtp_pass = ""
+smtp_to = ""
+
+# =====================================================================
+#  指数清单
+#    em_secid : 东方财富行情代码，1.=上交所  0.=深交所
+#    dj_code  : 蛋卷（雪球）估值代码，用于 PE/PB 历史
+#    etf      : 对应 ETF 代码，仅 round_to_lot=true 时使用
+#    ps_file  : 可选，市销率历史 CSV（date,value），缺省按 data/manual/<code>_ps.csv 查找
+# =====================================================================
+
+[[index]]
+name = "沪深300"
+code = "000300"
+em_secid = "1.000300"
+dj_code = "SH000300"
+etf = "510300"
+
+[[index]]
+name = "中证500"
+code = "000905"
+em_secid = "1.000905"
+dj_code = "SH000905"
+etf = "510500"
+
+[[index]]
+name = "中证1000"
+code = "000852"
+em_secid = "1.000852"
+dj_code = "SH000852"
+etf = "512100"
+
+[[index]]
+name = "上证50"
+code = "000016"
+em_secid = "1.000016"
+dj_code = "SH000016"
+etf = "510050"
+
+[[index]]
+name = "创业板指"
+code = "399006"
+em_secid = "0.399006"
+dj_code = "SZ399006"
+etf = "159915"
+
+[[index]]
+name = "科创50"
+code = "000688"
+em_secid = "1.000688"
+dj_code = "SH000688"
+etf = "588000"
+
+[[index]]
+name = "中证红利"
+code = "000922"
+em_secid = "1.000922"
+dj_code = "SH000922"
+etf = "515180"
+
+[[index]]
+name = "全指医药"
+code = "000991"
+em_secid = "1.000991"
+dj_code = "SH000991"
+etf = "159938"
+
+[[index]]
+name = "中证消费"
+code = "000932"
+em_secid = "1.000932"
+dj_code = "SH000932"
+etf = "159928"
+
+[[index]]
+name = "中证白酒"
+code = "399997"
+em_secid = "0.399997"
+dj_code = "SZ399997"
+etf = "512690"
+
+[[index]]
+name = "证券公司"
+code = "399975"
+em_secid = "0.399975"
+dj_code = "SZ399975"
+etf = "512880"
