@@ -232,6 +232,7 @@ async function resolve(code) {
   const tries = [];
   const csi = /^\d{6}$/.test(c) && (/^(93|95)/.test(c) || c.startsWith("005"));
   const huazheng = /^H\d{5}$/.test(c);
+  const dig6 = /^\d{6}$/.test(c);
 
   if (/^\d{6}$/.test(c)) {
     if (/^[0135]/.test(c)) tries.push(() => tx((c[0] === "0" || c[0] === "5" ? "sh" : "sz") + c));
@@ -241,6 +242,8 @@ async function resolve(code) {
   if (csi || huazheng) {
     tries.push(() => em("2." + c));
     tries.push(() => xq(c));
+  } else if (dig6 && c.startsWith("98")) {
+    tries.push(() => em("0." + c));        // 国证 98xxxx 在东财是深市 0.
   } else if (c.startsWith("HS")) {
     tries.push(() => xq(c));
     tries.push(() => em("100." + c));

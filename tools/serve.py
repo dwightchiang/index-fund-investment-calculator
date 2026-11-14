@@ -233,6 +233,8 @@ def resolve(code: str):
     tries.append(lambda: _xq(c))           # 雪球：中证/华证/恒生/美股都在这
     if dig6 and (c[:2] in ("93", "95") or c[:3] == "005"):
         tries.append(lambda: _em("2." + c))
+    if dig6 and c[:2] == "98":
+        tries.append(lambda: _em("0." + c))    # 国证 98xxxx 在东财是深市 0.
     if re.fullmatch(r"H\d{5}", c):
         tries.append(lambda: _em("2." + c))
     if c.startswith("HS"):

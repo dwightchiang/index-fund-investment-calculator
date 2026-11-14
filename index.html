@@ -98,6 +98,10 @@
   .fb-stale{color:var(--amber)}
   .fb-none{color:#64748b}
   .nmrow{display:flex;align-items:center;gap:5px;min-width:0}
+  .pick{flex:none;width:22px;height:22px;border-radius:50%;border:2px solid #475569;background:transparent;padding:0}
+  .pick.on{background:var(--accent);border-color:var(--accent)}
+  .drag{touch-action:none;cursor:grab;color:#64748b;font-size:15px;letter-spacing:-1px}
+  .row.dragging{opacity:.9;box-shadow:0 8px 22px rgba(0,0,0,.55);background:var(--card2)}
   .mon{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
   .mon .hd,.mon .it{display:grid;grid-template-columns:1.2fr .8fr .8fr .75fr 1.05fr;
       gap:4px;padding:7px 9px;font-size:13px;align-items:center}
@@ -193,6 +197,13 @@
       <button data-seg="20+">20+</button>
       <button data-seg="na">无行情</button>
       <button class="primary" id="btnRetrySegs" style="padding:4px 11px;font-size:12px;border-radius:999px">重试所选</button>
+    </div>
+    <div class="filters" id="retryPickRow" style="display:none">
+      <span style="font-size:12px;color:var(--dim);align-self:center">已选 <b id="pickCount">0</b> 个</span>
+      <button class="primary" id="btnRetryPick" style="padding:4px 11px;font-size:12px;border-radius:999px">重试所选涨跌</button>
+      <button id="btnPickAll">全选</button>
+      <button id="btnPickNone">清空</button>
+      <span style="font-size:11px;color:#64748b;align-self:center">点行右侧圆圈选中</span>
     </div>
     <div id="list1"></div>
     <button class="add" id="add1">+ 添加指数</button>
@@ -337,11 +348,12 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-14b";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-14c";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 8;
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
 const SHOW_MON = false;   // 监测页暂时不用：入口隐藏、也不拉它的行情
+const SHOW_SEG_RETRY = false;  // 按分位段重试：暂时隐藏（现在用「多选指数 → 重试涨跌」）
 
 const SEED1 = [
   ["中证白酒","399997"],["CS消费50","931139"],["中证消费","1B0932"],
@@ -384,7 +396,8 @@ let state = load();
 let quotes = {};
 let autoOn = true, onlyHit = false, onlyTodo = false, fillMode = false, prevAuto = true, prevSort = "order", monFilter = "all", tab = "s1";
 const openPanels = new Set();   // ⚙ 展开的面板，重绘后保持打开
-const retrySegs  = new Set();   // 填表模式里选中的分位段（用于批量重试行情）
+const retrySegs  = new Set();   // 分位段选择（暂时隐藏，SHOW_SEG_RETRY 打开后再用）
+const pickSet    = new Set();   // 填表模式里多选的指数（批量重试涨跌）
 
 function mk(list, prefix, extra){
   return list.map((a,i)=>Object.assign({
@@ -577,6 +590,7 @@ function fetchersFor(code){
   if(dig6 && /^[0135]/.test(c)) add("tx", ()=>fetchTX(txCode(c)));
   if(dig6 && /^98/.test(c))    add("tx98", ()=>fetchTX("sz"+c));
   if(dig6 && /^(93|95|005)/.test(c)) add("em2", ()=>fetchEM("2."+c));
+  if(dig6 && /^98/.test(c))    add("em0", ()=>fetchEM("0."+c));   // 国证 98xxxx 在东财是深市 0.
   if(/^H\d{5}$/.test(c))       add("em2", ()=>fetchEM("2."+c));
   if(c==="HS2083"||c==="HSTECH") add("hktech", ()=>fetchTX("hkHSTECH"));
   if(/^HS/.test(c) && c!=="HS2083") add("emhk", ()=>fetchEM("100."+c));
@@ -1073,20 +1087,59 @@ function applySort(key){
   state.order=arr.map(x=>x.code);
   save(); render();
 }
-/* 手动微调顺序（⚙ 面板里的置顶/上移/下移），与同花顺自选股的排序习惯一致 */
-function orderMove(id, act){
-  ensureOrder();
-  const it=state.list1.find(x=>x.id===id);
-  if(!it) return;
-  const i=state.order.indexOf(it.code);
-  if(i<0) return;
-  const [c]=state.order.splice(i,1);
-  if(act==="top")        state.order.unshift(c);
-  else if(act==="up")    state.order.splice(Math.max(0,i-1),0,c);
-  else                   state.order.splice(Math.min(state.order.length,i+1),0,c);
-  save(); render();
+/* 手动调序：填表模式里按住 ≡ 自由拖动（触屏/鼠标都支持，交换式） */
+let drag = null;                                   // {id,row,startY,moved}
+function codeById(id){ const it=state.list1.find(x=>x.id===id); return it ? it.code : null; }
+function orderSwapById(idA, idB){
+  const a=codeById(idA), b=codeById(idB);
+  if(!a || !b) return;
+  const i=state.order.indexOf(a), j=state.order.indexOf(b);
+  if(i<0 || j<0) return;
+  state.order[i]=b; state.order[j]=a;              // 交换两个位置，隐藏的行不受影响
+  drag.moved=true;
 }
-/* 填表模式：按分位段批量重试行情 */
+document.addEventListener("pointerdown", e=>{
+  const h=e.target.closest("[data-drag]");
+  if(!h || !fillMode) return;
+  const row=h.closest(".row[data-id]");
+  if(!row) return;
+  drag={ id:h.dataset.drag, row, startY:e.clientY, moved:false };
+  row.classList.add("dragging");
+  row.style.pointerEvents="none";                  // 让 elementFromPoint 穿透到下面的行
+  try{ h.setPointerCapture(e.pointerId); }catch(err){}
+  e.preventDefault();
+});
+document.addEventListener("pointermove", e=>{
+  if(!drag) return;
+  e.preventDefault();
+  drag.row.style.transform=`translateY(${e.clientY - drag.startY}px)`;
+  const under=document.elementFromPoint(e.clientX, e.clientY);
+  const other=under ? under.closest("#list1 .row[data-id]") : null;
+  if(!other || other===drag.row) return;
+  const oc=other.getBoundingClientRect().top + other.offsetHeight/2;
+  const follows = other.compareDocumentPosition(drag.row) & Node.DOCUMENT_POSITION_FOLLOWING;
+  const before=drag.row.getBoundingClientRect().top;
+  if(e.clientY < oc && follows){                   // 手指移到 other 上方 → other 退到拖拽行后面
+    other.parentNode.insertBefore(drag.row, other);
+    orderSwapById(drag.id, other.dataset.id);
+  }else if(e.clientY >= oc && !follows){           // 手指移到 other 下方 → 拖拽行插到 other 后面
+    other.parentNode.insertBefore(drag.row, other.nextSibling);
+    orderSwapById(drag.id, other.dataset.id);
+  }
+  if(drag.moved){
+    const after=drag.row.getBoundingClientRect().top;
+    drag.startY += (after - before);               // 保持手指下的视觉位置连续
+  }
+});
+document.addEventListener("pointerup", ()=>{
+  if(!drag) return;
+  const moved=drag.moved;
+  drag.row.style.transform=""; drag.row.style.pointerEvents="";
+  drag.row.classList.remove("dragging");
+  drag=null;
+  if(moved){ save(); render(); }
+});
+/* 填表模式：按分位段批量重试行情（暂时隐藏，SHOW_SEG_RETRY 打开后再用） */
 function segCodes(){
   const set=new Set();
   state.list1.forEach(it=>{
@@ -1159,6 +1212,9 @@ function renderSec1(){
         ${chgCell}
         <div class="amt ${amtView(r).cls}">${amtView(r).txt}</div>
         <div class="ops">
+          ${fillMode?`
+          <button class="ico drag" data-drag="${it.id}" title="按住拖动排序">≡</button>
+          <button class="pick ${pickSet.has(it.id)?"on":""}" data-pick="${it.id}" title="选中，批量重试涨跌"></button>`:""}
           <button class="ico" data-gear="${it.id}" title="设置">⚙</button>
           ${SHOW_MON?`<button class="ico" data-move="${it.id}" title="移到监测">⇄</button>`:""}
           <button class="ico del" data-del="${it.id}">×</button>
@@ -1170,12 +1226,9 @@ function renderSec1(){
         <div><label>状态</label><div style="font-size:12px;color:var(--dim);padding-top:8px">${r.text} · ${
           chg.date ? dateLabel(chg.date)+" "+(chg.src||"") : (chg.err || (chg.src? chg.src+"（实时）" : ""))
         }${manualNote}</div></div>
-        <div style="grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap">
-          <button class="mini" data-top="${it.id}">⤒ 置顶</button>
-          <button class="mini" data-up="${it.id}">↑ 上移</button>
-          <button class="mini" data-down="${it.id}">↓ 下移</button>
-          ${it.min?`<button class="mini" data-clearmin="${it.id}" title="清掉手填分位，改用蛋卷自动分位">清除手填</button>`:""}
-        </div>
+        ${it.min?`<div style="grid-column:1/-1">
+          <button class="mini" data-clearmin="${it.id}" title="清掉手填分位，改用蛋卷自动分位">清除手填分位</button>
+        </div>`:""}
       </div>
     </div>`;
   }).join("");
@@ -1247,6 +1300,7 @@ function renderMon(){
 }
 
 function render(){
+  if(drag) return;   // 拖动排序进行中，不要重建 DOM
   // 重绘前记住焦点输入框，重绘后恢复 —— 打字永远不被行情刷新打断
   const ae=document.activeElement;
   const fi=(ae && ae.dataset && ae.dataset.id)
@@ -1328,12 +1382,14 @@ document.addEventListener("click", e=>{
     }
     return;
   }
-  const otop=e.target.closest("[data-top]");
-  if(otop){ orderMove(otop.dataset.top,"top"); return; }
-  const oup=e.target.closest("[data-up]");
-  if(oup){ orderMove(oup.dataset.up,"up"); return; }
-  const odown=e.target.closest("[data-down]");
-  if(odown){ orderMove(odown.dataset.down,"down"); return; }
+  const pk=e.target.closest("[data-pick]");
+  if(pk){
+    const id=pk.dataset.pick;
+    if(pickSet.has(id)) pickSet.delete(id); else pickSet.add(id);
+    pk.classList.toggle("on", pickSet.has(id));
+    updateRetryPick();
+    return;
+  }
   const cmin=e.target.closest("[data-clearmin]");
   if(cmin){
     const it=state.list1.find(x=>x.id===cmin.dataset.clearmin);
@@ -1986,19 +2042,41 @@ $("#sortSel").addEventListener("change", ()=>{ applySort($("#sortSel").value); }
 $("#fTodo").onclick=()=>{ onlyTodo=!onlyTodo; updateFilters1(); render(); };
 $("#fFill").onclick=()=>{
   fillMode=!fillMode;
-  const segRow=$("#retrySegs");
+  const segRow=$("#retrySegs"), pickRow=$("#retryPickRow");
   if(fillMode){
     prevAuto=autoOn; prevSort=state.sort||"order";
     autoOn=false; onlyTodo=true;
-    if(segRow) segRow.style.display="flex";
+    if(segRow && SHOW_SEG_RETRY) segRow.style.display="flex";
+    if(pickRow) pickRow.style.display="flex";
   }else{
     autoOn=prevAuto; onlyTodo=false; state.sort=prevSort;
-    retrySegs.clear();
+    retrySegs.clear(); pickSet.clear();
     document.querySelectorAll("#retrySegs [data-seg]").forEach(b=>b.classList.remove("on"));
     if(segRow) segRow.style.display="none";
+    if(pickRow) pickRow.style.display="none";
     $("#btnAuto").textContent="自动刷新："+(autoOn?"盘中":"关");
   }
-  save(); updateFilters1(); render();
+  save(); updateFilters1(); render(); updateRetryPick();
+};
+function updateRetryPick(){
+  const n=pickSet.size, el=$("#pickCount");
+  if(el) el.textContent=n;
+  const b=$("#btnRetryPick");
+  if(b) b.classList.toggle("on", n>0);
+}
+$("#btnPickAll").onclick=()=>{ state.list1.forEach(it=>pickSet.add(it.id)); render(); updateRetryPick(); };
+$("#btnPickNone").onclick=()=>{ pickSet.clear(); render(); updateRetryPick(); };
+$("#btnRetryPick").onclick=async ()=>{
+  const codes=[...pickSet].map(id=>codeById(id)).filter(Boolean);
+  if(!codes.length){ alert("先点行右侧的圆圈选中指数（可多选）"); return; }
+  $("#btnRetryPick").disabled=true;
+  codes.forEach(c=>{ delete failCache[c]; delete quotes[c]; });
+  try{
+    await pool(codes, 4, async c=>{
+      try{ putQuote(c, await fetchQuote(c, true)); }catch(e){ putQuote(c, null); }
+    });
+    pickSet.clear(); render(); updateRetryPick();
+  }finally{ $("#btnRetryPick").disabled=false; }
 };
 $("#btnRefresh").onclick=async ()=>{
   if(tab==="s3"){ await loadPercentiles(true); render(); refreshQuotes("mon", true); }
