@@ -5,7 +5,7 @@
 数据来源：蛋卷（雪球）公开接口 danjuanfunds.com/djapi/index_eva/detail/<code>
         返回的 pe_percentile / pb_percentile 就是「近十年分位」（0~1）。
 
-输出：web/data/percentiles.json
+输出：data/percentiles.json
     网页（静态托管）用同源 fetch 读取，不需要 CORS、不需要后端。
 
 用法：
@@ -25,7 +25,7 @@ import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
-OUT = ROOT / "web" / "data" / "percentiles.json"
+OUT = ROOT / "data" / "percentiles.json"
 CATALOG = HERE / "indices.json"
 
 UA = {
@@ -64,7 +64,7 @@ def pct(v):
 def main() -> int:
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default=str(OUT), help="输出路径，默认 web/data/percentiles.json")
+    ap.add_argument("--out", default=str(OUT), help="输出路径，默认 data/percentiles.json")
     args = ap.parse_args()
     out_path = pathlib.Path(args.out)
 

@@ -1,6 +1,6 @@
 // 验证 proxyBase 能容忍各种填法
 const fs = require("fs");
-const html = fs.readFileSync("web/index.html", "utf8");
+const html = fs.readFileSync("index.html", "utf8");
 const a = html.indexOf("function proxyBase");
 const b = html.indexOf("function proxyUsable", a);
 const src = html.slice(a, b);
@@ -11,8 +11,8 @@ function setProxy(v){ state.proxy = v; }
 ${src}
 module.exports = { proxyBase, proxyUrl, setProxy };
 `;
-fs.writeFileSync("web/_px_test.js", harness);
-const m = require(require("path").resolve("web/_px_test.js"));
+fs.writeFileSync("_px_test.js", harness);
+const m = require(require("path").resolve("_px_test.js"));
 
 const cases = [
   ["https://abc.workers.dev/quote", "https://abc.workers.dev", "https://abc.workers.dev/quote"],

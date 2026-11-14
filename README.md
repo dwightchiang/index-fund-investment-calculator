@@ -4,7 +4,7 @@
 
 > **想在手机上用？** 见 [web/README.md](web/README.md)：
 > 本地跑 `python tools\serve.py`（或双击 `run_web.bat`），手机同 Wi-Fi 打开；
-> 或者把 `web/` 传到 GitHub Pages，配好 Action 后完全不用电脑。
+> 或者把整个仓库推到 GitHub（页面就在根目录），配好 Action 后完全不用电脑。
 
 ---
 

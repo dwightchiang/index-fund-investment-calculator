@@ -1,6 +1,6 @@
 // 静态检查：脚本里 $("#xxx") 引用的 id 是否真的存在于 HTML 中（否则 .onclick 会报 null 崩溃）
 const fs = require("fs");
-const html = fs.readFileSync("web/index.html", "utf8");
+const html = fs.readFileSync("index.html", "utf8");
 
 const ids = new Set();
 for (const m of html.matchAll(/\bid="([^"]+)"/g)) {

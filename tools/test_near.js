@@ -1,6 +1,6 @@
 // 回归测试：① 定投的计分/金额，特别是新增的「分位 5–10 也出金额、黄色标记」这一段
 const fs = require("fs");
-const html = fs.readFileSync("web/index.html", "utf8");
+const html = fs.readFileSync("index.html", "utf8");
 
 function slice(from, to) {
   const a = html.indexOf(from), b = html.indexOf(to, a + 1);
@@ -23,8 +23,8 @@ ${slice("/* 金额显示", "function dateLabel")}
 module.exports = { calc1, amtView, setQuotes: q => { quotes = q; } };
 `;
 
-fs.writeFileSync("web/_near_test.js", harness);
-const m = require(require("path").resolve("web/_near_test.js"));
+fs.writeFileSync("_near_test.js", harness);
+const m = require(require("path").resolve("_near_test.js"));
 
 let bad = 0;
 function check(name, got, want) {

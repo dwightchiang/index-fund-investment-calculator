@@ -117,7 +117,7 @@
 ## 分位数据
 
 来自**蛋卷（雪球）**公开接口的近十年 PE/PB 分位，`tools/fetch_percentiles.py` 每天跑一次，
-写成 `web/data/percentiles.json`，页面同源读取。
+写成 `data/percentiles.json`，页面同源读取。
 
 > 蛋卷只覆盖 17 个主流宽基/行业指数。其它指数（中证 93xxxx、同花顺概念板块等）
 > 没有公开分位，**需要你在 ③ 里手填**，填一次就会记住。
@@ -274,7 +274,7 @@ xxx.workers.dev                     ✅  ← 少写 https:// 也认
 监测页（68 个指数的 PE/PB 分位看板）目前是**关掉的**，由一个开关控制：
 
 ```js
-// web/index.html —— 搜 const SHOW_MON 就能找到（当前在第 307 行）
+// index.html —— 搜 const SHOW_MON 就能找到（当前在第 307 行）
 const SHOW_MON = false;   // false = 隐藏监测（当前）；true = 恢复监测
 ```
 
@@ -290,7 +290,7 @@ const SHOW_MON = false;   // false = 隐藏监测（当前）；true = 恢复监
 
 ### 想恢复监测
 
-1. 打开 [index.html](index.html)，搜 `const SHOW_MON`，把 `false` 改成 `true`：
+1. 打开 index.html，搜 `const SHOW_MON`，把 `false` 改成 `true`：
 
    ```js
    const SHOW_MON = true;

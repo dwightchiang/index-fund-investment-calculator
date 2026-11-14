@@ -1,6 +1,6 @@
 // 从 index.html 里抠出「过期判断」相关函数，用 node 跑一遍边界情况
 const fs = require("fs");
-const path = "web/index.html";
+const path = "index.html";
 const html = fs.readFileSync(path, "utf8");
 
 const start = html.indexOf("const STALE_MS");
@@ -15,8 +15,8 @@ const $ = () => null;
 ${src}
 module.exports = { isStale, ageSecs, qTs, normQuote, setTrading: v => { trading = v; } };
 `;
-fs.writeFileSync("web/_stale_test.js", harness);
-const m = require(require("path").resolve("web/_stale_test.js"));
+fs.writeFileSync("_stale_test.js", harness);
+const m = require(require("path").resolve("_stale_test.js"));
 
 const nowSec = Math.floor(Date.now() / 1000);
 const cases = [

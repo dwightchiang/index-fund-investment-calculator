@@ -57,7 +57,7 @@ def resolve_cached(code: str):
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
-WEB = ROOT / "web"
+WEB = ROOT          # 页面就在仓库根目录（与 GitHub Pages 的部署布局一致）
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120"}
 
 sess = requests.Session()

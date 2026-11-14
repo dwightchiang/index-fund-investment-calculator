@@ -2,7 +2,7 @@
 const fs = require("fs");
 const vm = require("vm");
 
-const html = fs.readFileSync("web/index.html", "utf8");
+const html = fs.readFileSync("index.html", "utf8");
 const code = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 
 class El {
