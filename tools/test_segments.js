@@ -83,9 +83,27 @@ m.set(list, q2, ["na"], []);
 check("无行情段 → 只选没行情的", m.retryTargets(), ["C7"]);
 check("无行情计数", m.segCounts().na, 1);
 
-// 没有分位数据的（既非手填也无蛋卷）在任何段里都不出现
+// 全选段也不含无分位的 C7
 m.set(list, quotes, ["0-5","5-10","10-15","15-20","20+"], []);
 check("全选段也不含无分位的 C7", m.retryTargets().includes("C7"), false);
+
+// —— 回归：全选后再取消一个段，数量必须跟着变（曾经的 bug：全选往 pickSet 里塞，取消段不生效）
+const ALLSEG = ["0-5","5-10","10-15","15-20","20+","na"];
+m.set(list, quotes, ALLSEG, []);
+const full = m.retryTargets().length;
+m.set(list, quotes, ALLSEG.filter(k => k !== "20+"), []);
+const after = m.retryTargets().length;
+check("全选时总数（6 个有分位，C7 无分位不计）", full, 6);
+check("取消 20+ 后减少 2 个", full - after, 2);
+check("取消 20+ 后 C5/C6 不再选中", [m.rowSel(list[4]), m.rowSel(list[5])], [false, false]);
+check("取消 20+ 后其余仍选中", [m.rowSel(list[0]), m.rowSel(list[2]), m.rowSel(list[3])], [true, true, true]);
+
+// 全选后取消「无行情」：C7 本来没行情，取消后仍在（它没有分位、不属任何段）
+m.set(list, q2, ALLSEG, []);
+check("全选（含无行情）总数", m.retryTargets().length, 7);
+m.set(list, q2, ALLSEG.filter(k => k !== "na"), []);
+check("取消无行情后 C7 不再选中", m.rowSel(list[6]), false);
+check("取消无行情后不含 C7", m.retryTargets().includes("C7"), false);
 
 console.log(bad ? `\n${bad} 项不符合预期` : "\n全部通过");
 process.exit(bad ? 1 : 0);
