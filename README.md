@@ -8,6 +8,48 @@
 
 ---
 
+## 0. 版本管理（git）
+
+本目录已是一个 git 仓库，远程是
+[github.com/dwightchiang/index-fund-investment-calculator](https://github.com/dwightchiang/index-fund-investment-calculator)
+（同一个仓库也在跑 GitHub Pages，所以**页面文件和分位数据都放在仓库根目录**）。
+
+**目录结构就是部署结构，不要再放两份 index.html：**
+
+```
+index.html              ← 页面本体（GitHub Pages 直接当首页）
+data/percentiles.json   ← 分位数据（Action 每天 15:35 覆盖）
+tools/                  ← fetch_percentiles.py / serve.py / worker.js / 测试
+dca/                    ← Python CLI
+web/README.md           ← 网页版使用说明（纯文档）
+```
+
+**日常三条命令**（改完东西就提交，提交后我这边会自动推送）：
+
+```powershell
+git status                     # 看改了什么
+git add -A
+git commit -m "一句话说清这次改了什么"
+git push                       # 推到 GitHub，Pages 随后自动更新
+```
+
+**常用查看 / 回滚：**
+
+```powershell
+git log --oneline              # 历史列表（每行一个版本）
+git show <提交号>              # 某次改了什么
+git diff                       # 还没提交的改动
+git revert <提交号>            # 撤销某次提交（生成新提交，安全）
+git checkout <提交号> -- 文件名 # 把某个文件恢复成历史版本
+git reset --hard <提交号>      # 整个目录退回到某个版本（本地未提交改动会丢）
+```
+
+> 推送凭据存在本机（`.git/config` 的远程地址 + Windows 凭据库），不进仓库、不会被提交。
+> 想换 token：GitHub → Settings → Developer settings → Personal access tokens 吊销旧的；
+> 再到本机 `git remote set-url origin https://<用户名>:<新token>@github.com/<用户名>/<仓库>.git`。
+
+---
+
 ## 1. 先把时点理清楚（这是整件事的关键）
 
 你在同花顺里看到的「分位值」是**上一个交易日收盘后**算出来的，因为估值分位依赖当天的收盘估值数据，
