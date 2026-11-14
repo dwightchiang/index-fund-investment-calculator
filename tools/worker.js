@@ -160,27 +160,31 @@ function tsOf(s) {
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : 0;
 }
 
-/* 东财 ulist：中证 93xxxx / 华证 Hxxxx 走市场号 2
-   哪个镜像连不上就记一笔，10 分钟内不再试它——否则每个代码都要白等一次超时 */
+/* 东财 ulist：中证 93xxxx / 华证 Hxxxx 走市场号 2，国证 98xxxx 走 0.
+   镜像「短期内别再试」的时间要短：东财经常是一次慢/一次通，
+   之前设 10 分钟，三个镜像被打进黑名单后整个 /quote 只能 404。 */
 const EM_DEAD = {};
+const EM_DEAD_MS = 45 * 1000;          // 45 秒后重新尝试该镜像
 function emDead(h) { return EM_DEAD[h] && EM_DEAD[h] > Date.now(); }
-function emMarkDead(h) { EM_DEAD[h] = Date.now() + 10 * 60 * 1000; }
+function emMarkDead(h) { EM_DEAD[h] = Date.now() + EM_DEAD_MS; }
+function emRevive(h) { delete EM_DEAD[h]; }
 
-async function em(secid) {
+async function em(secid, force) {
   const hosts = ["push2.eastmoney.com", "82.push2.eastmoney.com", "push2delay.eastmoney.com"];
   let lastErr = null;
   for (const h of hosts) {
-    if (emDead(h)) { lastErr = h + " 已知不通"; continue; }
+    if (!force && emDead(h)) { lastErr = h + " 冷却中"; continue; }
     try {
       const r = await fetchText(
         `https://${h}/api/qt/ulist.np/get?secids=${secid}&fields=f2,f3,f12,f13,f14,f18,f124&fltt=2&invt=2`,
         "https://quote.eastmoney.com/",
         null,
-        4000
+        6000
       );
       const js = await r.json();
       const it = ((js.data || {}).diff || [])[0];
       if (!it || !(it.f2 > 0)) { lastErr = h + " 无数据"; continue; }
+      emRevive(h);                    // 成功一次就解除该镜像的冷却
       return {
         price: +it.f2, prev: +(it.f18 || 0), pct: +(it.f3 || 0), date: "",
         ts: it.f124 ? +it.f124 : 0,
@@ -188,7 +192,7 @@ async function em(secid) {
       };
     } catch (e) {
       lastErr = h + " " + e.message;
-      emMarkDead(h);
+      if (!force) emMarkDead(h);      // force 模式不记黑名单
     }
   }
   if (lastErr) throw new Error(lastErr);
@@ -238,12 +242,17 @@ async function resolve(code) {
     if (/^[0135]/.test(c)) tries.push(() => tx((c[0] === "0" || c[0] === "5" ? "sh" : "sz") + c));
     if (/^98/.test(c)) tries.push(() => tx("sz" + c));
   }
-  // 中证/华证：先东财（CF 上一般 1–3 秒），雪球在 CF 出口经常挂住，放后面
+  // 中证/华证：东财优先（CF 上一般 1–3 秒），雪球必须作为兜底——
+  // 之前东财全挂时直接 404，其实雪球能拿到
   if (csi || huazheng) {
     tries.push(() => em("2." + c));
     tries.push(() => xq(c));
+    tries.push(() => em("1." + c));      // 部分中证指数在沪市 1.
   } else if (dig6 && c.startsWith("98")) {
-    tries.push(() => em("0." + c));        // 国证 98xxxx 在东财是深市 0.
+    // 国证 98xxxx：雪球没有（CSI980138 实测为空），只能靠东财深市 0.
+    // 东财镜像可能都被冷却，这里用「强制重试」绕过一次冷却，避免整段返回 404
+    tries.push(() => em("0." + c, true));
+    tries.push(() => em("2." + c, true));
   } else if (c.startsWith("HS")) {
     tries.push(() => xq(c));
     tries.push(() => em("100." + c));
@@ -285,7 +294,7 @@ export default {
     }
 
     if (path === "/ping") {
-      return new Response(JSON.stringify({ ok: true, v: "2026-11-05", quote: "/quote?code=399997",
+      return new Response(JSON.stringify({ ok: true, v: "2026-11-14", quote: "/quote?code=399997",
                                            batch: "/quotes?codes=399997,931139",
                                            dbg: "/dbg?code=H11136" }), {
         headers: { "Content-Type": "application/json; charset=utf-8", ...cors },
@@ -295,10 +304,13 @@ export default {
     // 逐个数据源单独试，看谁给了什么价（排查"两个客户端数据不一样"用）
     if (path === "/dbg") {
       const c = (url.searchParams.get("code") || "").toUpperCase();
+      const emSecids = [/^H\d{5}$/.test(c) || /^(93|95)/.test(c) || c.startsWith("005")
+                        ? "2." + c
+                        : (c.startsWith("98") ? "0." + c : c)];
       const cands = [
         ["腾讯", () => tx((c[0] === "0" || c[0] === "5" ? "sh" : "sz") + c)],
         ["雪球", () => xq(c)],
-        ["东财", () => em((/^H\d{5}$/.test(c) || /^(93|95)/.test(c) || c.startsWith("005")) ? "2." + c : c)],
+        ["东财", () => em(emSecids[0])],
         ["同花顺", () => ths(c)],
       ];
       const rows = [];
@@ -312,7 +324,13 @@ export default {
           rows.push({ src: name, ok: false, err: String(e.message || e), ms: Date.now() - t });
         }
       }
-      return new Response(JSON.stringify({ code: c, now: Math.floor(Date.now() / 1000), rows }, null, 2), {
+      return new Response(JSON.stringify({
+        code: c,
+        now: Math.floor(Date.now() / 1000),
+        emSecid: emSecids[0],
+        emDead: Object.keys(EM_DEAD).filter(emDead),
+        rows,
+      }, null, 2), {
         headers: { "Content-Type": "application/json; charset=utf-8", ...cors },
       });
     }

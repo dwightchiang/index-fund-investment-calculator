@@ -357,7 +357,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-14i";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-14j";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 8;
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
@@ -621,6 +621,7 @@ let proxyDownUntil = 0; // 代理连不上时，一段时间内不再尝试（�
 let proxyFailStreak = 0; // 连续网络失败次数：单个代码超时不拉黑整个代理
 let proxyStale = null;  // 代理返回过旧价时记一笔，界面上提示「代理延迟」
 const staleQuotes = {}; // 每个代码最近一次拿到的「过期报价」，直连也失败时用它兜底
+const lastGood = {};    // 每个代码最近一次成功取到的报价（3 天内有效），全挂时兜底
 const PROXY_COOL = 5*60*1000;
 
 function fetchWithTimeout(url, ms=8000){
@@ -749,6 +750,13 @@ async function fetchQuote(code, force){
   if(old){
     const mins=Math.max(1, Math.round(ageSecs(old.ts, old.srvNow)/60));
     return {...old, src:"代理·滞后"+mins+"分"};
+  }
+  // 5) 最后一次成功过的报价（缓存），标成「上次」——多少有点参考，好过空着
+  const last=lastGood[key];
+  if(last && Date.now()-last.at < 3*24*3600*1000){
+    const mins=Math.round((Date.now()-last.at)/60000);
+    const ago = mins<60 ? mins+"分前" : (mins<1440 ? Math.round(mins/60)+"小时前" : Math.round(mins/1440)+"天前");
+    return {...last, src:"上次·"+ago};
   }
   failCache[key]=true;
   throw new Error("无行情");
@@ -1872,6 +1880,8 @@ function putQuote(c, got){
                 date:String(got.date||"").replace(/-/g,""), ts:qTs(got.ts),
                 src:got.src||"代理", at:Date.now() };
     delete failCache[c];
+    lastGood[c]={ price:+got.price, prev:+got.prev||0, pct:+got.pct,
+                  date:String(got.date||"").replace(/-/g,""), ts:qTs(got.ts), at:Date.now() };
     return true;
   }
   quotes[c]={ err:(got&&got.error)||"无行情", at:Date.now() };
