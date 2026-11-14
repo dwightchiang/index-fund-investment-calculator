@@ -24,14 +24,30 @@ jobs:
       - name: 拉取分位
         run: python tools/fetch_percentiles.py --out data/percentiles.json
 
+      # 之前踩过的坑：脚本不认 --out，把文件写到 web/data/，这里 add 的是 data/，
+      # 于是「没有变化，跳过提交」，任务还显示 success —— 分位其实一周没更新。
+      - name: 校验数据
+        run: |
+          python - <<'PY'
+          import json, sys
+          d = json.load(open("data/percentiles.json", encoding="utf-8"))
+          n = len(d.get("items") or {})
+          print(f"指数 {n} 个，生成时间 {d.get('generated_at')}")
+          if n < 10:
+              sys.exit(f"❌ 只取到 {n} 个指数，疑似拉取失败")
+          print("✅ 数据校验通过")
+          PY
+          echo "---- 变更文件 ----"
+          git status --short
+
       - name: 提交
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/percentiles.json
           if git diff --staged --quiet; then
-            echo "没有变化，跳过提交"
-          else
-            git commit -m "chore: 更新指数估值分位 $(date -u +%Y-%m-%d)"
-            git push
+            echo "::warning::data/percentiles.json 没有变化（可能抓取失败或休市）"
+            exit 0
           fi
+          git commit -m "chore: 更新指数估值分位 $(date -u +%Y-%m-%d)"
+          git push
