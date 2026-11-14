@@ -52,7 +52,7 @@
   .row.hit{border-left-color:var(--green)}
   .row.near{border-left-color:var(--amber)}
   .row.na{border-left-color:var(--red)}
-  .grid{display:grid;grid-template-columns:1.25fr .8fr 1fr .9fr auto;gap:6px;align-items:center}
+  .grid{display:grid;grid-template-columns:26px 1.2fr .8fr 1fr .9fr auto;gap:6px;align-items:center}
   .grid>*{min-width:0}   /* 关键：不加这行，input 的默认最小宽度会把金额列挤出屏幕 */
   .nmcell{display:flex;flex-direction:column;line-height:1.15;overflow:hidden;min-width:0}
   .nm2{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -98,7 +98,7 @@
   .fb-stale{color:var(--amber)}
   .fb-none{color:#64748b}
   .nmrow{display:flex;align-items:center;gap:5px;min-width:0}
-  .pick{flex:none;width:22px;height:22px;border-radius:50%;border:2px solid #475569;background:transparent;padding:0}
+  .pick{flex:none;width:16px;height:16px;border-radius:50%;border:2px solid #475569;background:transparent;padding:0;justify-self:center}
   .pick.on{background:var(--accent);border-color:var(--accent)}
   .drag{touch-action:none;cursor:grab;color:#64748b;font-size:15px;letter-spacing:-1px}
   .row.dragging{opacity:.9;box-shadow:0 8px 22px rgba(0,0,0,.55);background:var(--card2)}
@@ -188,8 +188,8 @@
       <button id="fFill">📝 填表模式</button>
       <span id="count1" style="font-size:12px;color:var(--dim);margin-left:auto;align-self:center"></span>
     </div>
-    <div class="filters" id="retrySegs" style="display:none">
-      <span style="font-size:12px;color:var(--dim);align-self:center">重试行情</span>
+    <div class="filters" id="retrySegs">
+      <span style="font-size:12px;color:var(--dim);align-self:center">重试行情·按分位段</span>
       <button data-seg="0-5">0-5</button>
       <button data-seg="5-10">5-10</button>
       <button data-seg="10-15">10-15</button>
@@ -198,12 +198,12 @@
       <button data-seg="na">无行情</button>
       <button class="primary" id="btnRetrySegs" style="padding:4px 11px;font-size:12px;border-radius:999px">重试所选</button>
     </div>
-    <div class="filters" id="retryPickRow" style="display:none">
+    <div class="filters" id="retryPickRow">
       <span style="font-size:12px;color:var(--dim);align-self:center">已选 <b id="pickCount">0</b> 个</span>
       <button class="primary" id="btnRetryPick" style="padding:4px 11px;font-size:12px;border-radius:999px">重试所选涨跌</button>
       <button id="btnPickAll">全选</button>
       <button id="btnPickNone">清空</button>
-      <span style="font-size:11px;color:#64748b;align-self:center">点行右侧圆圈选中</span>
+      <span style="font-size:11px;color:#64748b;align-self:center">点行首圆圈选中（可多选），重试只拉涨跌</span>
     </div>
     <div id="list1"></div>
     <button class="add" id="add1">+ 添加指数</button>
@@ -348,12 +348,11 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-14c";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-14d";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 8;
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
 const SHOW_MON = false;   // 监测页暂时不用：入口隐藏、也不拉它的行情
-const SHOW_SEG_RETRY = false;  // 按分位段重试：暂时隐藏（现在用「多选指数 → 重试涨跌」）
 
 const SEED1 = [
   ["中证白酒","399997"],["CS消费50","931139"],["中证消费","1B0932"],
@@ -1087,6 +1086,20 @@ function applySort(key){
   state.order=arr.map(x=>x.code);
   save(); render();
 }
+/* 顺序微调：⚙ 面板里的置顶/上移/下移/移到底部（顺序也可在填表模式拖动） */
+function orderMove(id, act){
+  ensureOrder();
+  const it=state.list1.find(x=>x.id===id);
+  if(!it) return;
+  const i=state.order.indexOf(it.code);
+  if(i<0) return;
+  const [c]=state.order.splice(i,1);
+  if(act==="top")        state.order.unshift(c);
+  else if(act==="up")    state.order.splice(Math.max(0,i-1),0,c);
+  else if(act==="down")  state.order.splice(Math.min(state.order.length,i+1),0,c);
+  else                   state.order.push(c);          // 移到底部
+  save(); render();
+}
 /* 手动调序：填表模式里按住 ≡ 自由拖动（触屏/鼠标都支持，交换式） */
 let drag = null;                                   // {id,row,startY,moved}
 function codeById(id){ const it=state.list1.find(x=>x.id===id); return it ? it.code : null; }
@@ -1204,6 +1217,7 @@ function renderSec1(){
     const manualNote = (it.mpctAt ? ` · 手填涨跌 ${fmtAt(it.mpctAt)}` : (it.minAt ? ` · 手填分位 ${fmtAt(it.minAt)}` : "")) + autoNote;
     return `<div class="row ${r.tag}" data-id="${it.id}">
       <div class="grid">
+        <button class="pick ${pickSet.has(it.id)?"on":""}" data-pick="${it.id}" title="选中，批量重试涨跌"></button>
         <div class="nmcell">
           <div class="nmrow"><span class="nm2">${it.name}</span>${pctBadge(it)}</div>
           <span class="code2">${it.code}${q?"":` · <span style="color:#f87171" data-diag="${it.code}">无行情·点我</span>`}</span>
@@ -1212,12 +1226,8 @@ function renderSec1(){
         ${chgCell}
         <div class="amt ${amtView(r).cls}">${amtView(r).txt}</div>
         <div class="ops">
-          ${fillMode?`
-          <button class="ico drag" data-drag="${it.id}" title="按住拖动排序">≡</button>
-          <button class="pick ${pickSet.has(it.id)?"on":""}" data-pick="${it.id}" title="选中，批量重试涨跌"></button>`:""}
+          ${fillMode?`<button class="ico drag" data-drag="${it.id}" title="按住拖动排序">≡</button>`:""}
           <button class="ico" data-gear="${it.id}" title="设置">⚙</button>
-          ${SHOW_MON?`<button class="ico" data-move="${it.id}" title="移到监测">⇄</button>`:""}
-          <button class="ico del" data-del="${it.id}">×</button>
         </div>
       </div>
       <div class="expand ${openPanels.has(it.id)?"show":""}" data-panel="${it.id}">
@@ -1226,9 +1236,14 @@ function renderSec1(){
         <div><label>状态</label><div style="font-size:12px;color:var(--dim);padding-top:8px">${r.text} · ${
           chg.date ? dateLabel(chg.date)+" "+(chg.src||"") : (chg.err || (chg.src? chg.src+"（实时）" : ""))
         }${manualNote}</div></div>
-        ${it.min?`<div style="grid-column:1/-1">
-          <button class="mini" data-clearmin="${it.id}" title="清掉手填分位，改用蛋卷自动分位">清除手填分位</button>
-        </div>`:""}
+        <div style="grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap">
+          <button class="mini" data-top="${it.id}">⤒ 置顶</button>
+          <button class="mini" data-up="${it.id}">↑ 上移</button>
+          <button class="mini" data-down="${it.id}">↓ 下移</button>
+          <button class="mini" data-bottom="${it.id}">⤓ 移到底部</button>
+          ${it.min?`<button class="mini" data-clearmin="${it.id}" title="清掉手填分位，改用蛋卷自动分位">清除手填</button>`:""}
+          <button class="mini" data-delrow="${it.id}" style="color:#f87171">删除</button>
+        </div>
       </div>
     </div>`;
   }).join("");
@@ -1382,6 +1397,16 @@ document.addEventListener("click", e=>{
     }
     return;
   }
+  const otop=e.target.closest("[data-top]");
+  if(otop){ orderMove(otop.dataset.top,"top"); return; }
+  const oup=e.target.closest("[data-up]");
+  if(oup){ orderMove(oup.dataset.up,"up"); return; }
+  const odown=e.target.closest("[data-down]");
+  if(odown){ orderMove(odown.dataset.down,"down"); return; }
+  const obot=e.target.closest("[data-bottom]");
+  if(obot){ orderMove(obot.dataset.bottom,"bottom"); return; }
+  const delrow=e.target.closest("[data-delrow]");
+  if(delrow){ askDelete(delrow.dataset.delrow, state.list1, "定投"); return; }
   const pk=e.target.closest("[data-pick]");
   if(pk){
     const id=pk.dataset.pick;
@@ -2042,18 +2067,11 @@ $("#sortSel").addEventListener("change", ()=>{ applySort($("#sortSel").value); }
 $("#fTodo").onclick=()=>{ onlyTodo=!onlyTodo; updateFilters1(); render(); };
 $("#fFill").onclick=()=>{
   fillMode=!fillMode;
-  const segRow=$("#retrySegs"), pickRow=$("#retryPickRow");
   if(fillMode){
     prevAuto=autoOn; prevSort=state.sort||"order";
     autoOn=false; onlyTodo=true;
-    if(segRow && SHOW_SEG_RETRY) segRow.style.display="flex";
-    if(pickRow) pickRow.style.display="flex";
   }else{
     autoOn=prevAuto; onlyTodo=false; state.sort=prevSort;
-    retrySegs.clear(); pickSet.clear();
-    document.querySelectorAll("#retrySegs [data-seg]").forEach(b=>b.classList.remove("on"));
-    if(segRow) segRow.style.display="none";
-    if(pickRow) pickRow.style.display="none";
     $("#btnAuto").textContent="自动刷新："+(autoOn?"盘中":"关");
   }
   save(); updateFilters1(); render(); updateRetryPick();
