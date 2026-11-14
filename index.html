@@ -91,6 +91,12 @@
   .filters{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
   .filters button{padding:4px 11px;font-size:12px;border-radius:999px}
   .filters button.on{background:var(--accent);color:#04263a;border-color:var(--accent);font-weight:600}
+
+  /* 手填状态徽标：✅今天 / ⚠️过期 / ⬜未填 */
+  .fb{font-size:10px;padding:1px 5px;border-radius:5px;white-space:nowrap;font-weight:600}
+  .fb-ok{background:rgba(34,197,94,.15);color:var(--green)}
+  .fb-stale{background:rgba(245,158,11,.15);color:var(--amber)}
+  .fb-none{background:rgba(148,163,184,.15);color:var(--gray)}
   .mon{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
   .mon .hd,.mon .it{display:grid;grid-template-columns:1.2fr .8fr .8fr .75fr 1.05fr;
       gap:4px;padding:7px 9px;font-size:13px;align-items:center}
@@ -164,6 +170,11 @@
       <button id="btnCopy">复制</button>
     </div>
     <div class="ptime2" id="t1time">行情 —</div>
+    <div class="filters" id="filters1">
+      <button id="fSort">排序：分位↑</button>
+      <button id="fTodo">只看待填</button>
+      <button id="fFill">📝 填表模式</button>
+    </div>
     <div id="list1"></div>
     <button class="add" id="add1">+ 添加指数</button>
     <p class="note">填「最低分位」即出金额：<b>（5 − 最低分位 + 当日跌幅）× 单位</b>。
@@ -229,6 +240,14 @@
         <label>行情代理地址（可选，部署 tools/worker.js 后填 worker 地址）</label>
         <input id="proxyInput" placeholder="https://xxx.workers.dev/quote" style="margin-top:4px">
         <button class="mini" id="btnProxySave" style="margin-top:6px">保存代理</button>
+      </div>
+      <div style="margin-top:10px">
+        <label>云端自动同步 · GitHub token（需 repo 权限，只存本机浏览器，同步码/导出不含它）</label>
+        <input id="cloudTokenInput" type="password" placeholder="ghp_…（留空 = 关闭云端同步）" style="margin-top:4px" autocomplete="off">
+        <button class="mini" id="btnCloudSave" style="margin-top:6px">保存 token</button>
+        <button class="mini" id="btnCloudClear">清除</button>
+        <button class="mini" id="btnCloudNow">立即同步</button>
+        <p class="note" id="cloudStatus"></p>
       </div>
       <input type="file" id="fileImport" accept=".json" hidden>
       <p class="note" id="verLine" style="margin-top:10px;color:#64748b"></p>
@@ -300,7 +319,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-07a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-14a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 8;
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
@@ -345,7 +364,8 @@ const NO_QUOTE = new Set(["000958", "005012"]);
 let AUTO = { updated:"", items:{} };
 let state = load();
 let quotes = {};
-let autoOn = true, onlyHit = false, monFilter = "all", tab = "s1";
+let autoOn = true, onlyHit = false, onlyTodo = false, fillMode = false, prevAuto = true, prevSort = "min", monFilter = "all", tab = "s1";
+const openPanels = new Set();   // ⚙ 展开的面板，重绘后保持打开
 
 function mk(list, prefix, extra){
   return list.map((a,i)=>Object.assign({
@@ -920,18 +940,34 @@ function dateLabel(d){
   return `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`+(d===today?"":"（上一交易日）");
 }
 
+/* 手填状态：蛋卷覆盖的指数不需要手填 → 不显示徽标 */
+function hasAutoPct(it){ const {pe,pb}=effPct(it); return pe!==null||pb!==null; }
+function needsManual(it){ return !hasAutoPct(it); }
+function fillBadge(it){
+  if(!needsManual(it)) return "";
+  if(!it.min) return `<span class="fb fb-none">未填</span>`;
+  if(it.minAt===todayStr()) return `<span class="fb fb-ok">✅今天</span>`;
+  return `<span class="fb fb-stale">⚠️${(it.minAt||"").slice(5)||"已填"}</span>`;
+}
+function isTodo(it){ return needsManual(it) && (!it.min || it.minAt!==todayStr()); }
+
 function renderSec1(){
   const box=$("#list1");
-  const rows=state.list1.map(it=>({it,r:calc1(it)})).sort((a,b)=>{
-    const av=a.r.min===null?1e9:a.r.min, bv=b.r.min===null?1e9:b.r.min;
-    return av-bv;
-  });
-  const shown=onlyHit?rows.filter(x=>x.r.tag==="hit"):rows;
+  const rows=state.list1.map(it=>({it,r:calc1(it)}));
+  if(state.sortMode!=="fixed"){
+    rows.sort((a,b)=>{
+      const av=a.r.min===null?1e9:a.r.min, bv=b.r.min===null?1e9:b.r.min;
+      return av-bv;
+    });
+  }
+  let shown=rows;
+  if(onlyHit) shown=shown.filter(x=>x.r.tag==="hit");
+  if(onlyTodo) shown=shown.filter(x=>isTodo(x.it));
   $("#toggle1").textContent = onlyHit ? "显示全部" : "只看 <5";
   $("#toggle1").classList.toggle("on", onlyHit);
 
   if(!shown.length){
-    box.innerHTML=`<div class="empty">${onlyHit?"没有低于 5 的指数":"还没有指数，点下面添加"}</div>`;
+    box.innerHTML=`<div class="empty">${onlyTodo?"没有待填的指数（都填过且是今天填的）":(onlyHit?"没有低于 5 的指数":"还没有指数，点下面添加")}</div>`;
     return;
   }
   box.innerHTML=shown.map(({it,r})=>{
@@ -942,10 +978,11 @@ function renderSec1(){
     const chgCell = q
       ? `<div class="chg ${cls}">${pctTxt}</div>`
       : `<input inputmode="decimal" data-k="mpct" data-id="${it.id}" value="${it.mpct??""}" placeholder="涨跌%">`;
+    const manualNote = it.mpctAt ? ` · 手填涨跌 ${it.mpctAt}` : (it.minAt ? ` · 手填分位 ${it.minAt}` : "");
     return `<div class="row ${r.tag}" data-id="${it.id}">
       <div class="grid">
         <div class="nmcell">
-          <span class="nm2">${it.name}</span>
+          <span class="nm2">${it.name} ${fillBadge(it)}</span>
           <span class="code2">${it.code}${q?"":` · <span style="color:#f87171" data-diag="${it.code}">无行情·点我</span>`}</span>
         </div>
         <input inputmode="decimal" data-k="min" data-id="${it.id}" value="${it.min??""}" placeholder="分位">
@@ -957,12 +994,12 @@ function renderSec1(){
           <button class="ico del" data-del="${it.id}">×</button>
         </div>
       </div>
-      <div class="expand" data-panel="${it.id}">
+      <div class="expand ${openPanels.has(it.id)?"show":""}" data-panel="${it.id}">
         <div><label>单位/元</label><input inputmode="decimal" data-k="unit" data-id="${it.id}" value="${it.unit??10}"></div>
         <div><label>手动涨跌%</label><input inputmode="decimal" data-k="mpct" data-id="${it.id}" value="${it.mpct??""}" placeholder="自动"></div>
         <div><label>状态</label><div style="font-size:12px;color:var(--dim);padding-top:8px">${r.text} · ${
           chg.date ? dateLabel(chg.date)+" "+(chg.src||"") : (chg.err || (chg.src? chg.src+"（实时）" : ""))
-        }</div></div>
+        }${manualNote}</div></div>
       </div>
     </div>`;
   }).join("");
@@ -983,7 +1020,7 @@ function renderSec2(){
           <button class="ico del" data-del2="${it.id}">×</button>
         </div>
       </div>
-      <div class="expand" data-panel="${it.id}">
+      <div class="expand ${openPanels.has(it.id)?"show":""}" data-panel="${it.id}">
         <div><label>最高点</label><input inputmode="decimal" data-k="high" data-id="${it.id}" value="${it.high??""}"></div>
         <div><label>倍数</label><input inputmode="decimal" data-k="unit" data-id="${it.id}" value="${it.unit??1}"></div>
         <div><label>手动点位</label><input inputmode="decimal" data-k="manual" data-id="${it.id}" value="${it.manual??""}" placeholder="自动"></div>
@@ -1034,8 +1071,20 @@ function renderMon(){
 }
 
 function render(){
+  // 重绘前记住焦点输入框，重绘后恢复 —— 打字永远不被行情刷新打断
+  const ae=document.activeElement;
+  const fi=(ae && ae.dataset && ae.dataset.id)
+    ? { id:ae.dataset.id, k:ae.dataset.k, pos:ae.selectionStart, panel:ae.closest(".expand")?.dataset.panel||"" }
+    : null;
   state.list1.forEach(remember); state.list3.forEach(remember);
   renderSec1(); renderSec2(); if(SHOW_MON) renderMon(); renderTotals(); save();
+  if(fi){
+    const n=document.querySelector(`input[data-id="${fi.id}"][data-k="${fi.k}"]`);
+    if(n){
+      n.focus();
+      try{ n.setSelectionRange(fi.pos ?? n.value.length, fi.pos ?? n.value.length); }catch(e){}
+    }
+  }
 }
 function renderTotals(){
   let s1=0,s2=0,sn=0,n1=0,n2=0,neg=0;
@@ -1094,7 +1143,15 @@ document.addEventListener("click", e=>{
     renderMon(); return;
   }
   const g=e.target.closest("[data-gear]");
-  if(g){ const p=document.querySelector(`[data-panel="${g.dataset.gear}"]`); if(p) p.classList.toggle("show"); return; }
+  if(g){
+    const id=g.dataset.gear;
+    const p=document.querySelector(`[data-panel="${id}"]`);
+    if(p){
+      p.classList.toggle("show");
+      if(p.classList.contains("show")) openPanels.add(id); else openPanels.delete(id);
+    }
+    return;
+  }
   const mv=e.target.closest("[data-move]");
   if(mv){ moveTo(mv.dataset.move, state.list1, state.list3); return; }
   const push=e.target.closest("[data-push]");
@@ -1123,15 +1180,25 @@ function moveTo(id, from, to){
   save(); render();
 }
 
+function todayStr(){
+  const d=new Date();
+  return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+}
+function deviceName(){ return /Mobi|Android|iPhone/i.test(navigator.userAgent) ? "手机" : "电脑"; }
+
 document.addEventListener("input", e=>{
   const inp=e.target;
   if(!inp.dataset || !inp.dataset.k) return;
   const it=[...state.list1,...state.list2,...state.list3].find(x=>x.id===inp.dataset.id);
   if(!it) return;
   it[inp.dataset.k]=inp.value;
+  it.rev=Date.now();                        // 云端合并用：这条手填记录的更新时间
+  if(inp.dataset.k==="min"){ if(inp.value==="") delete it.minAt; else it.minAt=todayStr(); }
+  if(inp.dataset.k==="mpct"){ if(inp.value==="") delete it.mpctAt; else it.mpctAt=todayStr(); }
   save();
   if(inp.classList.contains("chip")){ inp.className="chip "+chipClass(num(inp.value)); }
   softRefresh();
+  scheduleCloudPush();                      // 手填值自动上云（防抖 20 秒）
 });
 
 /* 输入时只改数字，不重建 DOM，避免失焦 */
@@ -1258,11 +1325,13 @@ function doBulk(target){
           code, min:"", unit:10, pe:"", pb:"", mpct:""};
       bucket.push(it); added++;
     }
+    it.rev=Date.now();
     if(pe!==undefined && pe!=="-"){ if(bucket===state.list1) it.min=pe; else it.pe=pe; }
     if(pb!==undefined && pb!=="-") it.pb=pb;
   });
   save(); $("#dlgBulk").close(); render(); refreshQuotes();
   backfillNames();          // 只写了代码的行，自动补中文名
+  scheduleCloudPush();      // 批量导入的分位也推云端
   alert(`新增 ${added} 个，更新 ${updated} 个`);
 }
 $("#bulkOk1").onclick=()=>doBulk("list1");
@@ -1461,21 +1530,31 @@ function b64dec(s){
 }
 function packState(){
   const o={
-    v:1,
-    l1:state.list1.map(x=>[x.name,x.code,x.min??"",x.unit??10,x.pe??"",x.pb??"",x.mpct??""]),
-    l2:state.list2.map(x=>[x.name,x.code,x.high??"",x.unit??1,x.manual??""]),
-    l3:state.list3.map(x=>[x.name,x.code,x.pe??"",x.pb??""])
+    v:2,
+    l1:state.list1.map(x=>[x.name,x.code,x.min??"",x.unit??10,x.pe??"",x.pb??"",x.mpct??"",x.minAt??"",x.mpctAt??"",x.rev||0]),
+    l2:state.list2.map(x=>[x.name,x.code,x.high??"",x.unit??1,x.manual??"",x.rev||0]),
+    l3:state.list3.map(x=>[x.name,x.code,x.pe??"",x.pb??"",x.rev||0])
   };
   if(state.proxy)  o.px=state.proxy;
   if(state.pctUrl) o.pu=state.pctUrl;
+  if(state.sortMode && state.sortMode!=="min") o.sm=state.sortMode;
   return o;
 }
 function unpackState(o){
+  const v=o.v||1;
+  const l1a=a=>({id:"y1-"+Math.random().toString(36).slice(2,8), name:a[0], code:a[1],
+    min:a[2]??"", unit:a[3]??10, pe:a[4]??"", pb:a[5]??"", mpct:a[6]??"",
+    minAt:(v>=2?(a[7]||""):""), mpctAt:(v>=2?(a[8]||""):""), rev:(v>=2?(a[9]||0):0)});
+  const l2a=a=>({id:"y2-"+Math.random().toString(36).slice(2,8), name:a[0], code:a[1],
+    high:a[2]??"", unit:a[3]??1, manual:a[4]??"", rev:(v>=2?(a[5]||0):0)});
+  const l3a=a=>({id:"y3-"+Math.random().toString(36).slice(2,8), name:a[0], code:a[1],
+    min:"", unit:10, pe:a[2]??"", pb:a[3]??"", mpct:"", rev:(v>=2?(a[4]||0):0)});
   return {
     seedVer: SEED_VER,
-    list1:(o.l1||[]).map((a,i)=>({id:"y1-"+i, name:a[0], code:a[1], min:a[2]??"", unit:a[3]??10, pe:a[4]??"", pb:a[5]??"", mpct:a[6]??""})),
-    list2:(o.l2||[]).map((a,i)=>({id:"y2-"+i, name:a[0], code:a[1], high:a[2]??"", unit:a[3]??1, manual:a[4]??""})),
-    list3:(o.l3||[]).map((a,i)=>({id:"y3-"+i, name:a[0], code:a[1], min:"", unit:10, pe:a[2]??"", pb:a[3]??"", mpct:""})),
+    list1:(o.l1||[]).map(l1a),
+    list2:(o.l2||[]).map(l2a),
+    list3:(o.l3||[]).map(l3a),
+    sortMode: v>=2 ? (o.sm||"min") : "min",
     proxy:o.px||"", pctUrl:o.pu||"", last:{}, src:{}
   };
 }
@@ -1486,12 +1565,168 @@ function applySync(text){
   catch(e){ alert("同步码无效，检查是否粘全"); return false; }
   if(!o || !o.l1){ alert("同步码内容不对"); return false; }
   state=unpackState(o);
-  save(); render();
+  save(); render(); updateFilters1();
   $("#proxyInput").value=state.proxy||"";
   $("#pctUrlInput").value=state.pctUrl||"";
+  scheduleCloudPush();                        // 同步码带来的手填值也推到云端
   probeAPI().then(()=>refreshQuotes("all", true));
   return true;
 }
+
+/* ---------- 云端自动同步（手填值） ----------
+   存到本仓库 data/user-state.json（GitHub Contents API）。
+   只同步手填字段（min/pe/pb/mpct/high/manual/unit）+ 每条记录的 rev 时间戳，
+   指数的增删不自动同步（仍走同步码），避免误删传播。
+   token 只存本机 localStorage（dca-cloud-token），不进 state / 同步码 / 导出文件。 */
+const CLOUD_FILE = "data/user-state.json";
+const CLOUD_TOKEN_KEY = "dca-cloud-token";
+let cloudBusy = false, cloudTimer = null, applyingRemote = false;
+
+function cloudToken(){ return (localStorage.getItem(CLOUD_TOKEN_KEY)||"").trim(); }
+function cloudRepo(){
+  const m = location.hostname.match(/^([^.]+)\.github\.io$/);
+  if(m){
+    const seg = location.pathname.split("/").filter(Boolean);
+    return seg.length ? m[1]+"/"+seg[0] : m[1]+"/"+m[1]+".github.io";
+  }
+  return "dwightchiang/index-fund-investment-calculator";   // 本地跑时的默认仓库
+}
+async function gh(path, opts){
+  const r = await fetch("https://api.github.com"+path, Object.assign({
+    headers: { "Authorization": "Bearer "+cloudToken(),
+               "Accept": "application/vnd.github+json",
+               "Content-Type": "application/json" }
+  }, opts||{}));
+  if(!r.ok){
+    const t = await r.text();
+    const e = new Error("GitHub "+r.status+": "+t.slice(0,140));
+    e.status = r.status; throw e;
+  }
+  return r.json();
+}
+function b64u8(s){
+  const bytes = new TextEncoder().encode(s);
+  let bin=""; for(const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+function utf8b64(b){
+  const bin = atob(String(b).replace(/\s/g,""));
+  return new TextDecoder().decode(Uint8Array.from(bin, c=>c.charCodeAt(0)));
+}
+async function cloudRead(){
+  try{
+    const j = await gh(`/repos/${cloudRepo()}/contents/${CLOUD_FILE}?_=${Date.now()}`);
+    return { sha: j.sha, content: JSON.parse(utf8b64(j.content)) };
+  }catch(e){
+    if(e.status===404) return null;      // 云端还没有存档
+    throw e;
+  }
+}
+const CLOUD_FIELDS = { l1:["min","pe","pb","mpct","minAt","mpctAt"],
+                       l2:["high","manual","unit"], l3:["pe","pb"] };
+function cloudPack(){
+  const items={ l1:{}, l2:{}, l3:{} };
+  [["l1",state.list1],["l2",state.list2],["l3",state.list3]].forEach(([sec,arr])=>{
+    arr.forEach(it=>{
+      const o={ rev: it.rev||0 };
+      CLOUD_FIELDS[sec].forEach(k=>{ o[k]=it[k]??""; });
+      items[sec][it.code]=o;
+    });
+  });
+  return { v:1, updatedAt: Date.now(), device: deviceName(), items };
+}
+function cloudMerge(remote){
+  let applied=0;
+  const focusId = (document.activeElement && document.activeElement.dataset)
+    ? document.activeElement.dataset.id : null;
+  [["l1",state.list1],["l2",state.list2],["l3",state.list3]].forEach(([sec,arr])=>{
+    const rmap = (remote.items && remote.items[sec]) || {};
+    arr.forEach(it=>{
+      const r = rmap[it.code];
+      if(!r) return;
+      if((r.rev||0) <= (it.rev||0)) return;         // 本地的更新
+      if(it.id === focusId) return;                 // 正在输入的行不动
+      CLOUD_FIELDS[sec].forEach(k=>{ if(r[k]!==undefined) it[k]=r[k]; });
+      it.rev = r.rev||0; applied++;
+    });
+  });
+  if(applied) save();
+  return applied;
+}
+function cloudSetStatus(msg){
+  const el=$("#cloudStatus"); if(!el) return;
+  if(msg){ el.textContent=msg; return; }
+  if(!cloudToken()){ el.textContent="未配置 token：云端同步关闭，手填值只存本机（同步码仍可用）"; return; }
+  const l=state.cloudLast||{};
+  const f=at=>at? new Date(at).toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}) : "—";
+  el.textContent=`仓库 ${cloudRepo()} · 上次上传 ${f(l.up)} · 上次拉取 ${f(l.down)} · 云端更新 ${f(l.remoteAt)}（${l.device||"—"}）`;
+}
+function scheduleCloudPush(){
+  if(!cloudToken() || applyingRemote) return;
+  clearTimeout(cloudTimer);
+  cloudTimer=setTimeout(cloudPush, 20000);
+}
+async function cloudPush(){
+  if(!cloudToken() || applyingRemote) return;
+  if(cloudBusy){ scheduleCloudPush(); return; }
+  cloudBusy=true; cloudSetStatus("上传中…");
+  try{
+    const cur = await cloudRead();
+    if(cur && cur.content && (cur.content.updatedAt||0) > Date.now()-1000){
+      // 云端刚被别的设备更新过，先合并再上传
+      cloudMerge(cur.content);
+    }
+    const payload = cloudPack();
+    await gh(`/repos/${cloudRepo()}/contents/${CLOUD_FILE}`, { method:"PUT",
+      body: JSON.stringify({
+        message: "chore: 同步手填分位 "+new Date().toISOString().slice(0,16).replace("T"," "),
+        content: b64u8(JSON.stringify(payload, null, 1)),
+        sha: cur ? cur.sha : undefined,
+      }) });
+    cloudErr=""; state.cloudLast={ up:Date.now(), remoteAt:payload.updatedAt, device:payload.device };
+    save(); cloudSetStatus();
+  }catch(e){
+    cloudErr = e.message||String(e);
+    cloudSetStatus("⚠️ 云端上传失败："+cloudErr+"（本地数据不受影响）");
+  }finally{ cloudBusy=false; }
+}
+async function cloudPull(){
+  if(!cloudToken() || applyingRemote) return;
+  try{
+    const cur = await cloudRead();
+    if(!cur){ cloudErr=""; cloudSetStatus("云端还没有存档"); return; }
+    applyingRemote = true;
+    const n = cloudMerge(cur.content);
+    applyingRemote = false;
+    cloudErr="";
+    state.cloudLast = Object.assign({}, state.cloudLast,
+      { down:Date.now(), remoteAt:cur.content.updatedAt, device:cur.content.device });
+    save();
+    if(n){ render(); cloudSetStatus(`已从云端应用 ${n} 条手填值（来自 ${cur.content.device||"其他设备"}）`); }
+    else cloudSetStatus();
+  }catch(e){
+    applyingRemote=false;
+    cloudSetStatus("⚠️ 云端拉取失败："+(e.message||e));
+  }
+}
+$("#btnCloudSave").onclick=()=>{
+  const t=($("#cloudTokenInput").value||"").trim();
+  if(!t){ alert("先粘贴 token（github.com/settings/tokens 生成，勾 repo）"); return; }
+  localStorage.setItem(CLOUD_TOKEN_KEY, t);
+  cloudSetStatus();
+  cloudPull();                                // 先把云端的手填值拉下来合并
+};
+$("#btnCloudClear").onclick=()=>{
+  localStorage.removeItem(CLOUD_TOKEN_KEY);
+  $("#cloudTokenInput").value="";
+  cloudSetStatus("已清除 token，云端同步关闭");
+};
+$("#btnCloudNow").onclick=async ()=>{
+  if(!cloudToken()){ alert("先填 token 并保存"); return; }
+  $("#btnCloudNow").disabled=true; cloudSetStatus("同步中…");
+  try{ await cloudPull(); await cloudPush(); }
+  finally{ $("#btnCloudNow").disabled=false; cloudSetStatus(); }
+};
 const dlgSync=$("#dlgSync");
 $("#btnSync").onclick=()=>{
   $("#syncOut").value=makeSyncCode();
@@ -1526,6 +1761,32 @@ function checkHashSync(){
 
 /* ---------- 按钮 ---------- */
 $("#toggle1").onclick=()=>{ onlyHit=!onlyHit; renderSec1(); };
+/* 排序 / 待填筛选 / 填表模式 */
+function updateFilters1(){
+  const b1=$("#fSort"), b2=$("#fTodo"), b3=$("#fFill");
+  if(!b1) return;
+  b1.textContent = state.sortMode==="fixed" ? "排序：固定" : "排序：分位↑";
+  b1.classList.toggle("on", state.sortMode==="fixed");
+  b2.classList.toggle("on", onlyTodo);
+  b3.textContent = fillMode ? "退出填表模式" : "📝 填表模式";
+  b3.classList.toggle("on", fillMode);
+}
+$("#fSort").onclick=()=>{
+  state.sortMode = state.sortMode==="fixed" ? "min" : "fixed";
+  save(); updateFilters1(); render();
+};
+$("#fTodo").onclick=()=>{ onlyTodo=!onlyTodo; updateFilters1(); render(); };
+$("#fFill").onclick=()=>{
+  fillMode=!fillMode;
+  if(fillMode){
+    prevAuto=autoOn; prevSort=state.sortMode;
+    autoOn=false; onlyTodo=true; state.sortMode="fixed";
+  }else{
+    autoOn=prevAuto; onlyTodo=false; state.sortMode=prevSort;
+    $("#btnAuto").textContent="自动刷新："+(autoOn?"盘中":"关");
+  }
+  save(); updateFilters1(); render();
+};
 $("#btnRefresh").onclick=async ()=>{
   if(tab==="s3"){ await loadPercentiles(true); render(); refreshQuotes("mon", true); }
   else { refreshQuotes("main", true); }
@@ -1577,8 +1838,8 @@ $("#fileImport").onchange=async e=>{
   }catch(err){ alert("读取失败："+err.message); }
 };
 $("#btnReset").onclick=()=>{
-  if(!confirm("恢复默认清单？已填的分位会丢失。")) return;
-  localStorage.removeItem(KEY); state=load(); quotes={}; save(); render(); refreshQuotes();
+  if(!confirm("恢复默认清单？已填的分位会丢失。（云端存档里的手填值也会在下次同步时提示恢复）")) return;
+  localStorage.removeItem(KEY); state=load(); if(!state.sortMode) state.sortMode="min"; quotes={}; save(); render(); refreshQuotes();
 };
 $("#btnAuto").onclick=()=>{ autoOn=!autoOn; $("#btnAuto").textContent="自动刷新："+(autoOn?"盘中":"关"); };
 $("#btnCopy").onclick=async ()=>{
@@ -1651,15 +1912,21 @@ async function backfillNames(){
 }
 
 /* ---------- 启动 ---------- */
+if(!state.sortMode) state.sortMode="min";
 if($("#verLine")){
   $("#verLine").textContent = `版本 ${VER}　·　文件 ${location.pathname.split("/").pop()||"index.html"}`
     + (proxyBase()? `　·　代理 ${proxyBase()}` : "　·　未设代理（直连）");
 }
+if($("#cloudTokenInput")) $("#cloudTokenInput").value = cloudToken();
+updateFilters1();
+cloudSetStatus();
 restoreQuoteTime();
 render();
 loadPercentiles().then(()=>render());
 checkHashSync();
 backfillNames();
+cloudPull();                                 // 开机先看云端有没有新的手填值
+setInterval(()=>{ if(cloudToken()) cloudPull(); }, 5*60*1000);
 // 启动只拉「定投里分位 <10 + 回撤」；监测已隐藏不再拉
 probeAPI().then(()=>refreshQuotes("priority"));
 </script>
