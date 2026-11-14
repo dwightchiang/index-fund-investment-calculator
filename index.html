@@ -91,6 +91,10 @@
   .filters{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
   .filters button{padding:4px 11px;font-size:12px;border-radius:999px}
   .filters button.on{background:var(--accent);color:#04263a;border-color:var(--accent);font-weight:600}
+  /* 分位段选中：实心高亮 + ✓ 前缀（.on 被全局按钮样式覆盖时也能看出来） */
+  #retrySegs button[data-seg].on{background:var(--accent);color:#04263a;border-color:var(--accent);
+        font-weight:700;box-shadow:0 0 0 2px rgba(56,189,248,.3)}
+  #retrySegs button[data-seg].on::before{content:"✓ ";font-weight:800}
 
   /* 手填状态徽标：只显示图标，✓=新鲜 / ! =需更新 / ?=未填（放在独立行不被截断） */
   .fb{flex:none;font-size:12px;line-height:1;padding:1px 4px;border-radius:5px;font-weight:700}
@@ -159,7 +163,7 @@
     <span class="dot" id="dot"></span>
     <span id="status">加载中…</span>
     <span id="apiBadge" style="font-size:11px;color:var(--gray)"></span>
-    <button class="primary" id="btnRefresh" style="margin-left:auto;padding:5px 12px;font-size:13px">刷新</button>
+    <button class="primary" id="btnRefresh" title="重新拉取定投+回撤的全部行情（涨跌幅）" style="margin-left:auto;padding:5px 12px;font-size:13px">刷新行情</button>
   </div>
 </header>
 
@@ -172,7 +176,7 @@
       <span id="neg1" style="font-size:11px;color:var(--red)"></span>
       <span class="sp"></span>
       <button id="toggle1">只看 &lt;5</button>
-      <button id="btnCopy">复制</button>
+      <button id="btnCopy" title="把今天的金额清单复制成文字，可直接粘贴到微信/备忘录">复制结果</button>
     </div>
     <div class="ptime2" id="t1time">行情 —</div>
     <div class="filters" id="filters1">
@@ -191,20 +195,18 @@
       <span id="count1" style="font-size:12px;color:var(--dim);margin-left:auto;align-self:center"></span>
     </div>
     <div class="filters" id="retrySegs">
-      <span style="font-size:12px;color:var(--dim);align-self:center">重试行情·按分位段</span>
+      <span style="font-size:12px;color:var(--dim);align-self:center">重试行情</span>
       <button data-seg="0-5">0-5</button>
       <button data-seg="5-10">5-10</button>
       <button data-seg="10-15">10-15</button>
       <button data-seg="15-20">15-20</button>
       <button data-seg="20+">20+</button>
       <button data-seg="na">无行情</button>
-    </div>
-    <div class="filters" id="retryPickRow">
-      <button class="primary" id="btnRetryGo" style="padding:4px 11px;font-size:12px;border-radius:999px">重试所选（0）</button>
       <button id="btnPickAll">全选</button>
       <button id="btnPickNone">清空</button>
-      <span style="font-size:11px;color:#64748b;align-self:center">已选 <b id="retryCount">0</b> 个（段+圆圈都算），重试只拉涨跌</span>
+      <button class="primary" id="btnRetryGo" style="margin-left:auto;padding:4px 11px;font-size:12px;border-radius:999px">重试所选（0）</button>
     </div>
+    <div class="filters" id="retryPickRow" style="display:none"></div>
     <div id="list1"></div>
     <button class="add" id="add1">+ 添加指数</button>
     <p class="note">填「最低分位」即出金额：<b>（5 − 最低分位 + 当日跌幅）× 单位</b>。
@@ -357,7 +359,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-14e";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-14f";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 8;
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
@@ -395,6 +397,9 @@ const SEED3 = [
 const SEED2 = [
   ["存储芯片","886042",3716.55,1],["创成长","399296",10634.62,1],["科创成长","1B0690",3455.64,1]
 ];
+
+/* 默认展示顺序：按同花顺自选的原有顺序（截图 2026-11-14），截图里没有的排末尾 */
+const SEED_ORDER = ["931152", "1B0690", "980092", "886042", "H11136", "1B0932", "399975", "930641", "399997", "399296", "000985", "KWEB", "931139", "931068", "HS2083", "950090", "000919", "1B0905", "930743", "399989", "000922", "164906", "980017"];
 /* 已知取不到行情的代码：直接跳过，省时间（其余都会按 腾讯→雪球→东财→同花顺 依次尝试） */
 const NO_QUOTE = new Set(["000958", "005012"]);
 
@@ -1075,10 +1080,33 @@ function count1(){
 
 /* 展示顺序：state.order 是「代码数组」，点排序时生成一次，之后保持稳定不重排 */
 function ensureOrder(){
-  if(!Array.isArray(state.order)) state.order=state.list1.map(x=>x.code);
+  if(!Array.isArray(state.order)){
+    // 第一次跑：按 SEED_ORDER（同花顺原顺序）初始化，剩下的按当前顺序补在后面
+    const base=(typeof SEED_ORDER!=="undefined"?SEED_ORDER:[]).filter(c=>state.list1.some(x=>x.code===c));
+    const rest=state.list1.map(x=>x.code).filter(c=>!base.includes(c));
+    state.order=base.concat(rest);
+  }
   state.list1.forEach(x=>{ if(!state.order.includes(x.code)) state.order.push(x.code); });
   state.order=state.order.filter(c=>state.list1.some(x=>x.code===c));
 }
+/* 一次性迁移：把「同花顺原顺序」（截图 2026-11-14）应用到现有清单，并存一份存档。
+   只跑一次（state.orderVer 记住）。截图里没有的代码按原相对顺序排到末尾。 */
+const ORDER_VER = 1;
+function applyOrderMigration(){
+  if((state.orderVer||0) >= ORDER_VER) return;
+  const have=new Set(state.list1.map(x=>x.code));
+  const base=SEED_ORDER.filter(c=>have.has(c));
+  const rest=(state.order||[]).filter(c=>!base.includes(c) && have.has(c));
+  state.order=base.concat(rest);
+  state.orderAt=Date.now();
+  state.orderVer=ORDER_VER;
+  state.orderSnaps=state.orderSnaps||[];
+  if(!state.orderSnaps.some(s=>s.name==="同花顺原顺序")){
+    state.orderSnaps.push({name:"同花顺原顺序", codes:state.order.slice(), at:Date.now()});
+  }
+  save();
+}
+
 function applySort(key){
   state.sort=key;
   ensureOrder();
@@ -1193,9 +1221,12 @@ function retryTargets(){
 }
 function updateRetryUI(){
   const n=retryTargets().length;
-  const cnt=$("#retryCount"); if(cnt) cnt.textContent=n;
-  const go=$("#btnRetryGo"); if(go) go.classList.toggle("on", n>0);
-  document.querySelectorAll("#retrySegs [data-seg]").forEach(b=>b.classList.toggle("on", retrySegs.has(b.dataset.seg)));
+  const b=$("#btnRetryGo");
+  if(b){ b.textContent=`重试所选（${n}）`; b.disabled=false; }
+  // 分位段按钮的高亮必须在这里统一刷 —— 之前被另一个同名函数覆盖，点了不变色
+  document.querySelectorAll("#retrySegs [data-seg]").forEach(x=>{
+    x.classList.toggle("on", retrySegs.has(x.dataset.seg));
+  });
 }
 async function retryGo(){
   const codes=retryTargets();
@@ -1882,6 +1913,7 @@ function packState(){
   if(Array.isArray(state.order) && state.order.length) o.od=state.order.slice();
   if(state.orderAt) o.oa=state.orderAt;
   if(state.orderSnaps && state.orderSnaps.length) o.os=state.orderSnaps;
+  if(state.orderVer) o.ov=state.orderVer;
   return o;
 }
 function unpackState(o){
@@ -1910,6 +1942,7 @@ function unpackState(o){
       st.orderAt=o.oa||0;
     }
     if(Array.isArray(o.os)) st.orderSnaps=o.os;
+    if(o.ov) st.orderVer=o.ov;
   }
   return st;
 }
@@ -2213,12 +2246,6 @@ $("#fFill").onclick=()=>{
   if(rp) rp.style.display = fillMode ? "none" : "flex";
   save(); updateFilters1(); render(); updateRetryUI();
 };
-function updateRetryUI(){
-  const n=retryTargets().length, el=$("#retryCount");
-  if(el) el.textContent=n;
-  const b=$("#btnRetryGo");
-  if(b){ b.textContent=`重试所选（${n}）`; b.classList.toggle("on", n>0); }
-}
 /* 全选 = 分位段全选 + 行圆圈全选；清空 = 两边都清 */
 $("#btnPickAll").onclick=()=>{
   ["0-5","5-10","10-15","15-20","20+","na"].forEach(s=>retrySegs.add(s));
@@ -2348,6 +2375,7 @@ async function backfillNames(){
 /* ---------- 启动 ---------- */
 if(!state.sort) state.sort="order";
 ensureOrder();
+applyOrderMigration();
 updateRetryUI();
 if($("#verLine")){
   $("#verLine").textContent = `版本 ${VER}　·　文件 ${location.pathname.split("/").pop()||"index.html"}`
