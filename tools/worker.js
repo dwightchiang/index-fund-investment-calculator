@@ -91,11 +91,16 @@ function xqSymbol(code) {
   return null;
 }
 
+/* 雪球 cookie：拿不到就记冷却，5 分钟内不再尝试。
+   否则每个代码都要白等 1–3 秒去连 xueqiu.com，把整个 /quote 拖到 5–10 秒，
+   前端超时后全变成「无行情」。 */
+let XQ_COOKIE_DEAD = 0;
 async function xqCookie() {
   if (XQ_COOKIE) return XQ_COOKIE;
+  if (XQ_COOKIE_DEAD > Date.now()) return "";        // 冷却中，直接放弃雪球
   try {
     const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), 3500);
+    const timer = setTimeout(() => ctl.abort(), 2500);
     try {
       const r = await fetch("https://xueqiu.com/", {
         headers: {
@@ -113,6 +118,7 @@ async function xqCookie() {
       XQ_COOKIE = list.map((c) => String(c).split(";")[0]).filter(Boolean).join("; ");
     } finally { clearTimeout(timer); }
   } catch (e) { /* 忽略 */ }
+  if (!XQ_COOKIE) XQ_COOKIE_DEAD = Date.now() + 5 * 60 * 1000;
   return XQ_COOKIE;
 }
 

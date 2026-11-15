@@ -357,7 +357,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-14j";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-15a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 8;
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
@@ -502,10 +502,42 @@ async function emItem(secid){
       }catch(e){ /* 换镜像 */ }
     }
   }finally{ delete window[cb]; }
-  if(!payload) throw new Error("东财脚本无回调("+host+")");
+  if(!payload){
+    // 直连也有同样的坑：三个镜像全失败时，用 stock/get（单只接口）再试一次，
+    // 它和 ulist 是不同端点，经常一个通一个不通
+    try{
+      const it2=await emStockGet(secid);
+      if(it2) return it2;
+    }catch(e){}
+    throw new Error("东财脚本无回调("+host+")");
+  }
   const it = payload.data && payload.data.diff && payload.data.diff[0];
   if(!it) throw new Error("东财返回空");
   return it;
+}
+/* 东财单只接口（ulist 不通时的备用）：返回 ulist 同构的 {f2,f3,f18,f14} */
+function emStockGet(secid){
+  return new Promise((resolve,reject)=>{
+    const cb="__ems"+Math.random().toString(36).slice(2,8);
+    let payload=null; window[cb]=d=>{payload=d;};
+    (async()=>{
+      let host=null;
+      try{
+        for(const h of EM_HOSTS){
+          host=h;
+          try{
+            await loadScript(`https://${h}/api/qt/stock/get?secid=${secid}`
+              +`&fields=f43,f57,f58,f60,f169,f170,f86&fltt=2&invt=2&cb=${cb}&_=${Date.now()}`, 5000);
+            if(payload) break;
+          }catch(e){}
+        }
+      }finally{ delete window[cb]; }
+      const d=payload&&payload.data;
+      if(!d || !d.f43){ reject(new Error("东财 stock/get 无数据("+host+")")); return; }
+      const scale = Math.abs(d.f43)>1e5 ? 100 : 1;   // 有时返回整数分
+      resolve({ f2:d.f43/scale, f3:d.f170/scale, f18:d.f60/scale, f14:d.f58||"" });
+    })();
+  });
 }
 async function fetchEM(secid){
   const it = await emItem(secid);
@@ -663,7 +695,8 @@ function normQuote(j){
            src:(j.src||"代理")+"·代理" };
 }
 async function fetchViaProxyRaw(code){
-  const r = await fetchWithTimeout(withCode(proxyUrl(), code), 8000);
+  // Worker 里东财偶尔要 5–10 秒（雪球 cookie 失败那步会拖时间），8 秒会误判超时
+  const r = await fetchWithTimeout(withCode(proxyUrl(), code), 20000);
   if(!r.ok) throw new Error("proxy-"+r.status);
   let j=null;
   try{ j = await r.json(); }catch(e){ throw new Error("proxy-返回的不是 JSON（地址可能填成了网页/自检页）"); }
