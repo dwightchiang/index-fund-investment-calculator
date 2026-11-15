@@ -322,7 +322,8 @@
        background:#0b1220;border:1px solid var(--line);border-radius:8px;padding:10px;
        max-height:48vh;overflow:auto;-webkit-user-select:text;user-select:text"></pre>
   <div style="display:flex;gap:8px;margin-top:10px">
-    <button class="primary" id="diagRetry" style="flex:1">重试</button>
+    <button class="primary" id="diagRetry" style="flex:1">重试并写入</button>
+    <button id="diagUse" style="flex:1">用代理数据写入</button>
     <button id="diagCopy" style="flex:1">复制</button>
     <button id="diagClose" style="flex:1">关闭</button>
   </div>
@@ -357,7 +358,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-15a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-15b";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 8;
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
@@ -709,7 +710,7 @@ async function fetchViaProxyRaw(code){
 }
 async function fetchViaProxy(code){
   const q = await fetchViaProxyRaw(code);
-  if(isStale(q.ts, q.srvNow)){
+  if(isStale(q.ts, q.srvNow)){       // isStale 内部已判非交易时段 → 不会误杀隔夜数据
     noteProxyStale(q);              // 代理返回的是缓存住的旧价：短时间跳过它，改走直连
     staleQuotes[code]=q;            // 万一直连也取不到，至少能显示「滞后 N 分」的价
     throw new Error("proxy-stale");
@@ -809,11 +810,13 @@ async function retryDiag(){
   const pre=$("#diagText");
   pre.textContent=`重新拉取 ${diagCode} …`;
   delete failCache[diagCode];
+  proxyDownUntil=0; proxyFailStreak=0;   // 手动重试 = 强制用代理
   try{
     const r=await fetchQuote(diagCode, true);
-    quotes[diagCode]={price:r.price, prev:r.prev, pct:r.pct, date:r.date, src:r.src, at:Date.now()};
+    putQuote(diagCode, r);               // 统一入口，顺带写入 lastGood
     render();
-    pre.textContent=`✅ 拿到数据了\n\n${JSON.stringify(r,null,2)}`;
+    pre.textContent=`✅ 拿到数据了，已写入列表\n\n${JSON.stringify(r,null,2)}`;
+    setTimeout(()=>{ try{ dlgDiag.close(); }catch(e){} }, 900);
   }catch(e){
     pre.textContent=`❌ 仍然失败：${e.message||e}\n\n`+await diagnose(diagCode);
   }
@@ -872,8 +875,27 @@ async function diagnose(code){
     const t=Date.now();
     try{
       const r=await fetchViaProxyRaw(code);
-      const age=r.ts ? `  ${ageSecs(r.ts, r.srvNow)}s前` : "  ⚠️无源时间戳（代理是旧版，无法判断缓存）";
-      const w=isStale(r.ts, r.srvNow) ? "  ⚠️缓存旧价" : "";
+      // 诊断能拿到 → 说明代理是好的，立刻解除冷却，让接下来的刷新也走代理
+      proxyDownUntil=0; proxyFailStreak=0;
+      // 顺便把这条行情直接写进页面，省得用户再点一次刷新
+      putQuote(code, r);
+      renderSoon();
+      let age="";
+      if(r.ts){
+        const sec=ageSecs(r.ts, r.srvNow);
+        // 秒数只对「分钟级」有意义；非交易时段/隔夜的一律说成人话
+        if(sec < 600) age = `  ${sec}s前`;
+        else if(sec < 3600) age = `  ${Math.round(sec/60)}分钟前`;
+        else{
+          const hm = new Date(qTs(r.ts)).toLocaleString("zh-CN",
+            {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
+          age = `  ${hm} 的数据（${Math.round(sec/3600)}小时前）`;
+        }
+        if(!tradingNow() && sec > 3600) age += " · 非交易时段属正常";
+      }else{
+        age = "  ⚠️无源时间戳（代理是旧版，无法判断缓存）";
+      }
+      const w=(tradingNow() && isStale(r.ts, r.srvNow)) ? "  ⚠️缓存旧价" : "";
       out.push(`✅ 自建代理  ${r.price}  ${(+r.pct).toFixed(2)}%${age}${w}  ${Date.now()-t}ms`);
     }
     catch(e){ out.push(`❌ 自建代理  ${e.message}  ${Date.now()-t}ms`); }
@@ -894,8 +916,14 @@ async function diagnose(code){
     }
   }
   out.push("");
-  out.push("说明：同一时刻不同源点位不同 = 有一方是缓存/延迟行情；");
-  out.push("页面以「点位 + 涨跌幅 + 源时间戳」都最新的一方为准。");
+  if(!tradingNow()){
+    out.push("说明：现在是非交易时段，行情停在最近一次收盘，时间戳是「上一条成交」的时间，");
+    out.push("隔了几个小时甚至一天都属正常，不代表取了旧数据。");
+  }else{
+    out.push("说明：同一时刻不同源点位不同 = 有一方是缓存/延迟行情；");
+    out.push("页面以「点位 + 涨跌幅 + 源时间戳」都最新的一方为准。");
+  }
+  out.push("只要各源的点位/涨跌幅一致，就说明数据是对的。");
   return `代码 ${code}\n\n`+out.join("\n");
 }
 
@@ -1921,14 +1949,19 @@ function putQuote(c, got){
   return false;
 }
 /* 边拉边显示：每回来一条就重画一次（200ms 合并），不用等整批拉完 */
-let progTimer=null;
+let progTimer=null, progPending=false;
 function renderSoon(){
-  if(progTimer) return;
+  if(progTimer) { progPending=true; return; }
   progTimer=setTimeout(()=>{
     progTimer=null;
     const a=document.activeElement;
-    // 用户正在某个输入框里打字，就先别重画，等整批结束再统一画
-    if(a && (a.tagName==="INPUT"||a.tagName==="TEXTAREA") && a.closest("#list1,#list2,#list3")) return;
+    // 用户正在输入框里打字：先不重画，但要记住「有活没干」，等他一停就补画
+    if(a && (a.tagName==="INPUT"||a.tagName==="TEXTAREA") && a.closest("#list1,#list2,#list3")){
+      progPending=true;
+      setTimeout(()=>{ progPending=false; if(!progTimer) renderSoon(); }, 1200);
+      return;
+    }
+    progPending=false;
     render();
   }, 200);
 }
@@ -2460,6 +2493,23 @@ function tick(){
 setInterval(tick,1000); tick();
 
 $("#diagClose").onclick=()=>dlgDiag.close();
+/* 「用代理数据写入」：诊断明明拿到了，页面却是无行情时，一键把它写进去 */
+$("#diagUse").onclick=async ()=>{
+  if(!diagCode){ alert("先诊断一个代码"); return; }
+  const pre=$("#diagText");
+  pre.textContent=`从代理取 ${diagCode} 并写入…`;
+  try{
+    const r=await fetchViaProxyRaw(diagCode);
+    proxyDownUntil=0; proxyFailStreak=0;
+    putQuote(diagCode, r);
+    delete failCache[diagCode];
+    render();
+    pre.textContent=`✅ 已写入：${r.price}  ${(+r.pct).toFixed(2)}%\n\n${JSON.stringify(r,null,2)}`;
+    setTimeout(()=>{ try{ dlgDiag.close(); }catch(e){} }, 800);
+  }catch(e){
+    pre.textContent=`❌ 代理也没取到：${e.message||e}`;
+  }
+};
 $("#diagRetry").onclick=retryDiag;
 $("#diagCopy").onclick=async ()=>{
   const t=$("#diagText").textContent;
