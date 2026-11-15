@@ -83,7 +83,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  .row2 .grid{grid-template-columns:1.25fr .9fr .9fr .9fr .8fr auto}
+  .row2 .grid{grid-template-columns:1.25fr .8fr .7fr .85fr .85fr .8fr auto}
   .row2 .cell{text-align:center;font-size:13px;color:var(--dim)}
   .row2 .cell b{color:var(--fg);font-variant-numeric:tabular-nums}
 
@@ -358,7 +358,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-15c";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-15d";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 8;
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
@@ -1026,7 +1026,11 @@ function coefOf(dd){ return dd<20 ? 0 : 1 + 0.5*Math.floor((dd-20)/10); }
 function calc2(it){
   const q=quotes[it.code]||{};
   const high=num(it.high);
-  const o={dd:null,coef:0,amount:0,tag:"off",text:"",price:null,date:q.date};
+  // 涨跌：手填 mpct2 优先，其次行情
+  const mPct=num(it.mpct2);
+  const livePct=(typeof q.pct==="number"&&!q.err)?q.pct:null;
+  const o={dd:null,coef:0,amount:0,tag:"off",text:"",price:null,date:q.date,
+           pct:(mPct!==null?mPct:livePct), manualPct:mPct!==null, src:q.src||"", qerr:q.err||""};
   if(!(high>0)){ o.text="未填最高点"; return o; }
   const manual=num(it.manual);
   const price=manual!==null?manual:(q.price||null);
@@ -1458,12 +1462,23 @@ function renderSec1(){
 function renderSec2(){
   $("#list2").innerHTML = state.list2.map(it=>{
     const r=calc2(it);
+    const p=r.pct;
+    const pctTxt = p===null ? "—" : (p>=0?"+":"")+p.toFixed(2)+"%";
+    const pctCls = p===null ? "flat" : (p>0?"up":p<0?"dn":"flat");
+    const q=quotes[it.code];
+    const noQ=!q || q.err;
+    const chgCell = noQ
+      ? `<input inputmode="decimal" data-k="mpct2" data-id="${it.id}" value="${it.mpct2??""}" placeholder="涨跌%">`
+      : `<div class="chg ${pctCls}">${pctTxt}</div>`;
     return `<div class="row row2 ${r.tag}" data-id="${it.id}">
       <div class="grid">
-        <div class="nmcell"><span class="nm2">${it.name}</span><span class="code2">${it.code}</span></div>
+        <div class="nmcell"><span class="nm2">${it.name}</span>
+          <span class="code2">${it.code}${noQ?` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`:""}</span>
+        </div>
         <div class="cell">回撤<br><b>${fmt(r.dd,1)}%</b></div>
         <div class="cell">系数<br><b>${r.coef?r.coef.toFixed(1):"0"}</b></div>
         <div class="cell">现价<br><b>${r.price?r.price.toFixed(2):"—"}</b></div>
+        ${chgCell}
         <div class="amt ${r.amount>0?"":"zero"}">${r.amount>0?("¥"+r.amount):"—"}</div>
         <div class="ops">
           <button class="ico" data-gear="${it.id}">⚙</button>
@@ -1474,6 +1489,7 @@ function renderSec2(){
         <div><label>最高点</label><input inputmode="decimal" data-k="high" data-id="${it.id}" value="${it.high??""}"></div>
         <div><label>倍数</label><input inputmode="decimal" data-k="unit" data-id="${it.id}" value="${it.unit??1}"></div>
         <div><label>手动点位</label><input inputmode="decimal" data-k="manual" data-id="${it.id}" value="${it.manual??""}" placeholder="自动"></div>
+        <div><label>手动涨跌%</label><input inputmode="decimal" data-k="mpct2" data-id="${it.id}" value="${it.mpct2??""}" placeholder="自动"></div>
       </div>
     </div>`;
   }).join("");
@@ -1712,7 +1728,9 @@ document.addEventListener("input", e=>{
   it[inp.dataset.k]=inp.value;
   it.rev=Date.now();                        // 云端合并用：这条手填记录的更新时间
   if(inp.dataset.k==="min"){ if(inp.value==="") delete it.minAt; else it.minAt=Date.now(); }
-  if(inp.dataset.k==="mpct"){ if(inp.value==="") delete it.mpctAt; else it.mpctAt=Date.now(); }
+  if(inp.dataset.k==="mpct" || inp.dataset.k==="mpct2"){
+    if(inp.value==="") delete it.mpctAt; else it.mpctAt=Date.now();
+  }
   save();
   if(inp.classList.contains("chip")){ inp.className="chip "+chipClass(num(inp.value)); }
   softRefresh();
@@ -2089,7 +2107,7 @@ function packState(){
   const o={
     v:2,
     l1:state.list1.map(x=>[x.name,x.code,x.min??"",x.unit??10,x.pe??"",x.pb??"",x.mpct??"",x.minAt??"",x.mpctAt??"",x.rev||0]),
-    l2:state.list2.map(x=>[x.name,x.code,x.high??"",x.unit??1,x.manual??"",x.rev||0]),
+    l2:state.list2.map(x=>[x.name,x.code,x.high??"",x.unit??1,x.manual??"",x.rev||0,x.mpct2??""]),
     l3:state.list3.map(x=>[x.name,x.code,x.pe??"",x.pb??"",x.rev||0])
   };
   if(state.proxy)  o.px=state.proxy;
@@ -2106,7 +2124,7 @@ function unpackState(o){
   const l1a=a=>({id:"y1-"+Math.random().toString(36).slice(2,8), name:a[0], code:a[1],
     min:a[2]??"", unit:a[3]??10, pe:a[4]??"", pb:a[5]??"", mpct:a[6]??""});
   const l2a=a=>({id:"y2-"+Math.random().toString(36).slice(2,8), name:a[0], code:a[1],
-    high:a[2]??"", unit:a[3]??1, manual:a[4]??""});
+    high:a[2]??"", unit:a[3]??1, manual:a[4]??"", mpct2:a[6]??""});
   const l3a=a=>({id:"y3-"+Math.random().toString(36).slice(2,8), name:a[0], code:a[1],
     min:"", unit:10, pe:a[2]??"", pb:a[3]??"", mpct:""});
   const st={
@@ -2235,7 +2253,7 @@ async function cloudRead(){
   }
 }
 const CLOUD_FIELDS = { l1:["min","pe","pb","mpct","minAt","mpctAt"],
-                       l2:["high","manual","unit"], l3:["pe","pb"] };
+                       l2:["high","manual","unit","mpct2"], l3:["pe","pb"] };
 function cloudPack(){
   const items={ l1:{}, l2:{}, l3:{} };
   [["l1",state.list1],["l2",state.list2],["l3",state.list3]].forEach(([sec,arr])=>{

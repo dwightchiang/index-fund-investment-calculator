@@ -79,7 +79,7 @@ m.setState({
 const p = m.cloudPack();
 check("pack l1", p.items.l1["399673"],
       { rev: 99, min: "5.6", pe: "", pb: "", mpct: "-4", minAt: "2026-11-14", mpctAt: "2026-11-14" });
-check("pack l2", p.items.l2["886042"], { rev: 5, high: 3716.55, manual: "", unit: 1 });
+check("pack l2", p.items.l2["886042"], { rev: 5, high: 3716.55, manual: "", unit: 1, mpct2: "" });
 check("pack l3", p.items.l3["H11136"], { rev: 7, pe: "1.31", pb: "" });
 check("pack 有 updatedAt/device", [!!p.updatedAt, p.device], [true, "测试机"]);
 
