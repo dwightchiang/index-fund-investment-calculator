@@ -192,10 +192,9 @@
     <div class="phead">
       <span class="t">今日合计</span><span class="sum" id="sum1">—</span>
       <span id="near1" style="font-size:11px;color:var(--amber)"></span>
-      <span id="neg1" style="font-size:11px;color:var(--red)"></span>
       <span class="sp"></span>
       <button id="toggle1">只看 &lt;5</button>
-      <button id="btnCopy" title="把今天的金额清单复制成文字，可直接粘贴到微信/备忘录">复制结果</button>
+      <button id="btnCopy" title="把今天的金额清单复制成文字，可直接粘贴到微信/备忘录">复制</button>
     </div>
     <div class="ptime2" id="t1time">行情 —</div>
     <div class="filters" id="filters1">
@@ -381,7 +380,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-16a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-16b";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 8;
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
@@ -1211,10 +1210,19 @@ function applyOrderMigration(){
   save();
 }
 
+/* 排序 = 只影响「显示顺序」，绝不修改 state.order（自定义顺序）。
+   以前这里把排序结果写回了 state.order，导致选一次「分位↑」就把你排好的顺序冲掉，
+   切回「自定义顺序」也回不来。 */
 function applySort(key){
   state.sort=key;
+  save(); render();
+}
+/* 按当前 state.sort 计算出的显示顺序（不改 state.order） */
+function viewOrder(){
   ensureOrder();
   const arr=state.order.map(c=>state.list1.find(x=>x.code===c)).filter(Boolean);
+  const key=state.sort||"order";
+  if(key==="order") return arr;
   const rows=arr.map(it=>({it,r:calc1(it)}));
   const pair=new Map(rows.map(p=>[p.it.code,p]));
   const keyOf={
@@ -1223,19 +1231,13 @@ function applySort(key){
     pct:   p=>p.r.chg.pct===null?1e9:p.r.chg.pct,     // 跌得多在前
     amt:   p=>-(p.r.amount||0),                       // 金额大在前，0/负在后
   };
-  if(key==="name") arr.sort((a,b)=>a.name.localeCompare(b.name,"zh"));
-  else if(key==="order") arr.sort((a,b)=>state.order.indexOf(a.code)-state.order.indexOf(b.code));
-  else{
-    const f=keyOf[key]||keyOf.pctile;
-    arr.sort((a,b)=>f(pair.get(a.code))-f(pair.get(b.code)));
-  }
-  state.order=arr.map(x=>x.code);
-  state.orderAt=Date.now();
-  save(); render(); scheduleCloudPush();
+  if(key==="name") return arr.slice().sort((a,b)=>a.name.localeCompare(b.name,"zh"));
+  const f=keyOf[key]||keyOf.pctile;
+  return arr.slice().sort((a,b)=>f(pair.get(a.code))-f(pair.get(b.code)));
 }
-/* 顺序微调：⚙ 面板里的置顶/上移/下移/移到底部（顺序也可在填表模式拖动） */
+/* 手动调序：⚙ 面板里的置顶/上移/下移/移到底部（顺序也可在填表模式拖动） */
 function orderMove(id, act){
-  ensureOrder();
+  forceCustomOrder();                 // 调顺序前先切回自定义顺序，否则改的是看不见的那个
   const it=state.list1.find(x=>x.id===id);
   if(!it) return;
   const i=state.order.indexOf(it.code);
@@ -1247,6 +1249,14 @@ function orderMove(id, act){
   else                   state.order.push(c);          // 移到底部
   state.orderAt=Date.now();
   save(); render(); scheduleCloudPush();
+}
+/* 拖动/置顶前强制切回自定义顺序（否则改的是"看不见"的那个顺序） */
+function forceCustomOrder(){
+  ensureOrder();
+  if((state.sort||"order")!=="order"){
+    state.sort="order";
+    const sel=$("#sortSel"); if(sel) sel.value="order";
+  }
 }
 /* 手动调序：填表模式里按住 ≡ 自由拖动（触屏/鼠标都支持，交换式） */
 let drag = null;                                   // {id,row,startY,moved}
@@ -1262,6 +1272,7 @@ function orderSwapById(idA, idB){
 document.addEventListener("pointerdown", e=>{
   const h=e.target.closest("[data-drag]");
   if(!h || !fillMode) return;
+  forceCustomOrder();                              // 拖动必须基于自定义顺序
   const row=h.closest(".row[data-id]");
   if(!row) return;
   drag={ id:h.dataset.drag, row, startY:e.clientY, moved:false };
@@ -1420,9 +1431,8 @@ async function retryGo(){
 
 function renderSec1(){
   const box=$("#list1");
-  ensureOrder();
-  const rows=state.order.map(c=>state.list1.find(x=>x.code===c)).filter(Boolean)
-    .map(it=>({it,r:calc1(it)}));
+  // 显示顺序由 viewOrder() 决定；自定义顺序（state.order）不受排序下拉影响
+  const rows=viewOrder().map(it=>({it,r:calc1(it)}));
   let shown=rows;
   if(onlyHit) shown=shown.filter(x=>x.r.tag==="hit");
   if(onlyTodo) shown=shown.filter(x=>isTodo(x.it));
@@ -1575,24 +1585,22 @@ function render(){
   }
 }
 function renderTotals(){
-  let s1=0,s2=0,sn=0,n1=0,n2=0,neg=0;
+  let s1=0,s2=0,sn=0,n1=0,n2=0;
   state.list1.forEach(it=>{
     const r=calc1(it);
     if(r.tag==="na"||r.min===null) return;
     if(r.tag==="hit"){
       if(r.amount>0){ s1+=r.amount; n1++; }
-      else if(r.amount<0) neg++;
     }else if(r.tag==="near"){
       if(r.amount>0) sn+=r.amount;
     }
   });
   state.list2.forEach(it=>{const r=calc2(it); if(r.amount>0){s2+=r.amount;n2++;}});
+  // 主数字 = 分位 <5 的触发金额；5–10 段单独用小字标注（不并入主数字）
   $("#sum1").textContent=s1?"¥"+s1.toLocaleString("zh-CN"):"—";
   $("#sum2").textContent=s2?"¥"+s2.toLocaleString("zh-CN"):"—";
   const nr=$("#near1");
-  if(nr) nr.textContent = sn ? `5–10 段 ¥${sn.toLocaleString("zh-CN")}` : "";
-  const ng=$("#neg1");
-  if(ng) ng.textContent = neg ? `另 ${neg} 个负值` : "";
+  if(nr) nr.textContent = sn ? `+${sn.toLocaleString("zh-CN")} 临近段` : "";
   const b1=$("#badge1"), b2=$("#badge2");
   b1.textContent=n1; b2.textContent=n2;
   b1.className="badge"+(n1?"":" zero");
@@ -2211,6 +2219,17 @@ function renderSnapList(){
 $("#fSnap").onclick=()=>{
   ensureOrder();
   $("#snapName").value="";
+  // 如果从没存过档，先自动存一份当前顺序，避免「没东西可还原」
+  state.orderSnaps=state.orderSnaps||[];
+  if(!state.orderSnaps.some(s=>s.name==="同花顺原顺序")){
+    const have=new Set(state.list1.map(x=>x.code));
+    const base=(typeof SEED_ORDER!=="undefined"?SEED_ORDER:[]).filter(c=>have.has(c));
+    if(base.length){
+      const rest=state.order.filter(c=>!base.includes(c) && have.has(c));
+      state.orderSnaps.push({name:"同花顺原顺序", codes:base.concat(rest), at:Date.now()});
+      save();
+    }
+  }
   renderSnapList();
   try{ dlgSnap.showModal(); }catch(e){}
 };
