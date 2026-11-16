@@ -25,9 +25,16 @@
   button.mini{padding:3px 10px;font-size:12px;border-radius:8px}
 
   header{position:sticky;top:0;z-index:20;background:rgba(15,23,42,.97);
-         backdrop-filter:blur(8px);border-bottom:1px solid var(--line);padding:8px 12px 6px}
-  .hrow{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim)}
-  .hrow b{font-size:16px;color:var(--fg);font-weight:600;margin-right:2px}
+         backdrop-filter:blur(8px);border-bottom:1px solid var(--line);padding:7px 12px 5px}
+  /* 顶部两行：第一行 时间/状态/刷新，第二行代理状态（空则自动收起） */
+  .hrow{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);
+        flex-wrap:nowrap;min-width:0}
+  .hrow .tm{font-variant-numeric:tabular-nums;font-weight:600;color:var(--fg);flex:none}
+  .hrow #status{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .hrow #countdown{flex:none;white-space:nowrap;font-size:11px}
+  .hrow2{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--gray);
+         margin-top:2px;min-height:0}
+  .hrow2:empty{display:none}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--gray);flex:none}
   .dot.ok{background:var(--green)} .dot.err{background:var(--red)}
 
@@ -48,11 +55,14 @@
 
   /* ① 每行一条 */
   .row{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--gray);
-       border-radius:12px;margin-bottom:7px;padding:7px 9px}
+       border-radius:12px;margin-bottom:7px;padding:7px 9px;transition:background .12s,border-color .12s}
   .row.hit{border-left-color:var(--green)}
   .row.near{border-left-color:var(--amber)}
   .row.na{border-left-color:var(--red)}
-  .grid{display:grid;grid-template-columns:26px 1.2fr .8fr 1fr .9fr auto;gap:6px;align-items:center}
+  /* 选中：整行高亮（替代行首圆圈，省一列宽度给名称） */
+  .row.picked{background:#16233b;border-color:var(--accent);
+              box-shadow:0 0 0 1px var(--accent) inset}
+  .grid{display:grid;grid-template-columns:1.55fr .78fr 1fr .95fr auto;gap:7px;align-items:center}
   .grid>*{min-width:0}   /* 关键：不加这行，input 的默认最小宽度会把金额列挤出屏幕 */
   .nmcell{display:flex;flex-direction:column;line-height:1.15;overflow:hidden;min-width:0}
   .nm2{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -100,8 +110,7 @@
   .fb-stale{color:var(--amber)}
   .fb-none{color:#64748b}
   .nmrow{display:flex;align-items:center;gap:5px;min-width:0}
-  .pick{flex:none;width:16px;height:16px;border-radius:50%;border:2px solid #475569;background:transparent;padding:0;justify-self:center}
-  .pick.on{background:var(--accent);border-color:var(--accent)}
+  .pick{display:none}   /* 已改用整行高亮选中 */
   .drag{touch-action:none;cursor:grab;color:#64748b;font-size:15px;letter-spacing:-1px}
   .row.dragging{opacity:.9;box-shadow:0 8px 22px rgba(0,0,0,.55);background:var(--card2)}
   .mon{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
@@ -150,18 +159,30 @@
     .tabbar{max-width:760px;margin:0 auto;left:50%;transform:translateX(-50%);right:auto;width:100%;
             border:1px solid var(--line);border-bottom:none;border-radius:14px 14px 0 0}
   }
+  /* 窄屏（手机）：把金额列稍微收紧、名称更宽松，避免名称被压成省略号 */
+  @media (max-width:430px){
+    .grid{grid-template-columns:1.7fr .72fr .95fr .82fr auto;gap:6px}
+    .nm2{font-size:13.5px}
+    .amt{font-size:15px}
+    .chg{font-size:12.5px}
+    header{padding:6px 10px 4px}
+    .hrow{font-size:11.5px;gap:5px}
+    .hrow #countdown{font-size:10.5px}
+  }
 </style>
 </head>
 <body>
 <header>
   <div class="hrow">
-    <b>定投</b>
-    <span id="clock">--:--:--</span>
+    <span class="tm" id="clock">--:--:--</span>
     <span id="countdown"></span>
     <span class="dot" id="dot"></span>
     <span id="status">加载中…</span>
-    <span id="apiBadge" style="font-size:11px;color:var(--gray)"></span>
-    <button class="primary" id="btnRefresh" title="重新拉取定投+回撤的全部行情（涨跌幅）" style="margin-left:auto;padding:5px 12px;font-size:13px">刷新行情</button>
+    <button class="primary" id="btnRefresh" title="重新拉取定投+回撤的全部行情（涨跌幅）"
+            style="margin-left:auto;padding:5px 12px;font-size:13px;flex:none">刷新</button>
+  </div>
+  <div class="hrow2" id="hrow2">
+    <span id="apiBadge"></span>
   </div>
 </header>
 
@@ -205,6 +226,8 @@
       <button class="primary" id="btnRetryGo" style="margin-left:auto;padding:4px 11px;font-size:12px;border-radius:999px">重试</button>
     </div>
     <div class="filters" id="retryPickRow" style="display:none"></div>
+    <p class="note" id="pickHint" style="margin:-4px 0 8px;font-size:11px">
+      点整行选中（可多选）→ 点右上「重试」重新拉这些指数的涨跌</p>
     <div id="list1"></div>
     <button class="add" id="add1">+ 添加指数</button>
     <p class="note">填「最低分位」即出金额：<b>（5 − 最低分位 + 当日跌幅）× 单位</b>。
@@ -358,7 +381,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-15d";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-16a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 8;
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
@@ -836,13 +859,13 @@ async function probeAPI(){
       const r=await fetchWithTimeout(proxyBase()+"/ping", 4000);
       const j=await r.json();
       if(j && j.ok){
-        if(proxyStale && isStale(proxyStale.ts, proxyStale.srvNow)) setBadge("代理数据延迟·直连","var(--amber)");
-        else { proxyDownUntil=0; setBadge("代理在线","var(--green)"); }
+        if(proxyStale && isStale(proxyStale.ts, proxyStale.srvNow)) setBadge("⚠ 代理数据延迟","var(--amber)");
+        else { proxyDownUntil=0; setBadge("● 代理在线","var(--green)"); }
       }
       else throw new Error("bad ping");
     }catch(e){
       proxyDownUntil=Date.now()+PROXY_COOL;
-      setBadge("代理离线·直连","var(--amber)");
+      setBadge("⚠ 代理离线，走直连","var(--amber)");
     }
   }
 
@@ -1328,7 +1351,6 @@ function updateRetryUI(){
   const n=retryTargets().length;
   const b=$("#btnRetryGo");
   if(b){ b.textContent=`重试（${n}）`; b.disabled=false; }
-  if(n===0){ /* 全部取消选中，按钮仍在，点它会提示 */ }
   const c=segCounts();
   // 交集模式下各段数量要按「无行情」过滤后的真实数量显示
   const cntOf=(k)=>{
@@ -1425,9 +1447,8 @@ function renderSec1(){
     const autoD=autoYmdOf(it);
     const autoNote = (!it.min && autoD) ? ` · 蛋卷 ${autoD.slice(4,6)}-${autoD.slice(6,8)}` : "";
     const manualNote = (it.mpctAt ? ` · 手填涨跌 ${fmtAt(it.mpctAt)}` : (it.minAt ? ` · 手填分位 ${fmtAt(it.minAt)}` : "")) + autoNote;
-    return `<div class="row ${r.tag}" data-id="${it.id}">
+    return `<div class="row ${r.tag} ${rowSel(it)?"picked":""}" data-id="${it.id}">
       <div class="grid">
-        <button class="pick ${rowSel(it)?"on":""}" data-pick="${it.id}" title="${segSel(it)?"已按分位段选中":(pickSet.has(it.id)?"已选中":"点选中，批量重试涨跌")}"></button>
         <div class="nmcell">
           <div class="nmrow"><span class="nm2">${it.name}</span>${pctBadge(it)}</div>
           <span class="code2">${it.code}${q?"":` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`}</span>
@@ -1629,11 +1650,12 @@ document.addEventListener("click", e=>{
   if(obot){ orderMove(obot.dataset.bottom,"bottom"); return; }
   const delrow=e.target.closest("[data-delrow]");
   if(delrow){ askDelete(delrow.dataset.delrow, state.list1, "定投"); return; }
-  const pk=e.target.closest("[data-pick]");
-  if(pk){
-    const id=pk.dataset.pick;
+  // 点整行（非输入框/按钮/链接）切换选中；不再用行首圆圈，省出一列给名称
+  const rrow=e.target.closest("#list1 .row[data-id]");
+  if(rrow && rrow.closest("#pane-s1") && !e.target.closest("input,button,a,select,[data-diag]")){
+    const id=rrow.dataset.id;
     if(pickSet.has(id)) pickSet.delete(id); else pickSet.add(id);
-    pk.classList.toggle("on", pickSet.has(id));
+    rrow.classList.toggle("picked", pickSet.has(id) || segSel(state.list1.find(x=>x.id===id)||{}));
     updateRetryUI();
     return;
   }
