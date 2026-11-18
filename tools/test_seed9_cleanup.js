@@ -53,13 +53,13 @@ const user31 = [
   ["国证算力","399363"],
 ].map(([n,c],i)=>({ id:"a-"+i, code:c, name:n, min:String(3+i*0.5), unit:10, pe:"", pb:"", mpct:"" }));
 
-// v9 误补：全空、id 前缀 a9-
+// v9 误补：全空、id 是 add() 真实生成的格式 a-9-N（不是 a9-N！）
 const wronglyAdded = [
-  { id:"a9-0", code:"164906", name:"中概互联网LOF", min:"", unit:10, pe:"", pb:"", mpct:"" },
-  { id:"a9-1", code:"HS2083", name:"恒生科技指数", min:"", unit:10, pe:"", pb:"", mpct:"" },
-  { id:"a9-2", code:"KWEB", name:"中证海外中国互联网", min:"", unit:10, pe:"", pb:"", mpct:"" },
-  { id:"a9-3", code:"980017", name:"国证芯片", min:"", unit:10, pe:"", pb:"", mpct:"" },
-  { id:"a9-4", code:"886042", name:"存储芯片", min:"", unit:10, pe:"", pb:"", mpct:"" },
+  { id:"a-9-0", code:"164906", name:"中概互联网LOF", min:"", unit:10, pe:"", pb:"", mpct:"" },
+  { id:"a-9-1", code:"HS2083", name:"恒生科技指数", min:"", unit:10, pe:"", pb:"", mpct:"" },
+  { id:"a-9-2", code:"KWEB", name:"中证海外中国互联网", min:"", unit:10, pe:"", pb:"", mpct:"" },
+  { id:"a-9-3", code:"980017", name:"国证芯片", min:"", unit:10, pe:"", pb:"", mpct:"" },
+  { id:"a-9-4", code:"886042", name:"存储芯片", min:"", unit:10, pe:"", pb:"", mpct:"" },
 ];
 const ndx = { id:"jc-9-0", code:"NDX", name:"纳斯达克100", min:"", unit:10, pe:"", pb:"", mpct:"",
               jc:"NDX.GI", formula:"jc20" };

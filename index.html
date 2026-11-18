@@ -273,6 +273,7 @@
     <div class="row" style="padding:12px">
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button id="btnReload">重新拉分位</button>
+        <button id="btnCleanup" title="删掉版本升级时被误加回来的预置行（没填过任何数据的）">清理多余预置行</button>
         <button id="btnDiag">行情诊断</button>
         <button id="btnBulk">批量导入/改分位</button>
         <button id="btnExport">导出配置</button>
@@ -301,6 +302,7 @@
         <p class="note" id="cloudStatus"></p>
       </div>
       <input type="file" id="fileImport" accept=".json" hidden>
+      <p class="note" id="cleanupHint" style="color:var(--amber);margin-top:6px"></p>
       <p class="note" id="verLine" style="margin-top:10px;color:#64748b"></p>
     </div>
   </section>
@@ -380,7 +382,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-18c";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-18d";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1318,25 +1320,49 @@ function ensureOrder(){
 }
 /* 一次性清理：v9 迁移曾把用户删掉的 SEED1 行硬补回清单（31 → 37）。
    判据（必须同时满足，才认定是"自动补回来的"）：
-     ① id 以 a9- 开头 —— v9 的 add() 专用前缀，用户手动加的是 x-/b-/jc- 等
-     ② 分位 / PE / PB / 手填涨跌 全空，且没有 minAt / mpctAt / rev —— 用户从没碰过
-   注意不要用「存档里有没有」判断：那 31 个的存档是补行之前存的，里面本来就有它们。 */
-function cleanupSeed9Rows(){
-  if((state.seed9Cleanup||0) >= SEED9_CLEANUP_VER) return;
+     ① 分位 / PE / PB / 手填涨跌 全空，且没有 minAt / mpctAt / rev —— 用户从没碰过它
+     ② 它出现在某个「同花顺原顺序」存档里 —— 说明用户当年确实要它（存档是认可过的清单）
+        → 反过来：不满足 ② 的，视作"多出来的"
+     ③ 兜底：如果它有 a9-/a8-/a7- 这类自动生成 id 前缀，直接认定
+   为了不误删用户手加的行，②③ 至少要中一条；如果没有任何「同花顺原顺序」存档，
+   就只按 ③ 判（宁可少删）。 */
+/* 手动清理入口：设置页「清理多余预置行」按钮 / 控制台 __cleanupSeed9(true) */
+function cleanupSeed9Rows(force){
+  if(!force && (state.seed9Cleanup||0) >= SEED9_CLEANUP_VER) return;
+
+  // 历史上所有「同花顺原顺序」存档覆盖过的代码（用户认可过的清单）
+  const known=new Set();
+  (state.orderSnaps||[]).forEach(sn=>{
+    if(sn && /同花顺|原顺序/.test(sn.name||"") && Array.isArray(sn.codes))
+      sn.codes.forEach(c=>known.add(c));
+  });
+
+  const untouched=it=>
+    String(it.min??"")==="" && String(it.pe??"")==="" && String(it.pb??"")==="" &&
+    String(it.mpct??"")==="" && !it.minAt && !it.mpctAt && !it.rev;
+
   const list=state.list1||[];
   const bad=list.filter(it=>{
-    if(!/^a9-/.test(String(it.id||""))) return false;
-    if(String(it.min??"")!=="" || String(it.pe??"")!=="" || String(it.pb??"")!=="" || String(it.mpct??"")!=="") return false;
-    if(it.minAt || it.mpctAt || it.rev) return false;      // 有过任何操作痕迹 → 用户的
-    return true;
+    if(!untouched(it)) return false;                    // 碰过的一律不动
+    // ① v9 的 add() 生成 id = "a"+"-"+9+"-"+i → 形如 a-9-0
+    //    （之前误写成 /^a9-/ 少了个横杠，一个都匹配不上，所以一直没删掉）
+    if(/^a-9-/.test(String(it.id||""))) return true;
+    // ② 有「同花顺原顺序」存档，但这行不在里面 → 也是多出来的
+    //    （只对"从没碰过"的行生效，见上面的 untouched 过滤）
+    if(known.size && !known.has(it.code)) return true;
+    return false;
   });
+
   if(!bad.length){ state.seed9Cleanup=SEED9_CLEANUP_VER; save(); return; }
   const drop=new Set(bad.map(x=>x.code));
   state.list1=state.list1.filter(x=>!drop.has(x.code));
   if(Array.isArray(state.order)) state.order=state.order.filter(c=>!drop.has(c));
   state.seed9Cleanup=SEED9_CLEANUP_VER;
   save();
-  console.log("[cleanup] 移除 v9 误补的预置行：", [...drop].join(", "));
+  console.log("[cleanup] 移除误补的预置行：", [...drop].join(", "));
+  state.lastCleanup = { at: Date.now(), codes: [...drop] };
+  const el=$("#cleanupHint");
+  if(el) el.textContent = `已清理 ${drop.size} 个多余预置行：${[...drop].join("、")}（共 ${state.list1.length} 行）`;
 }
 
 /* 一次性迁移：把韭圈儿行（纳斯达克100）移到清单最前面。
@@ -2673,6 +2699,22 @@ $("#btnRefresh").onclick=async ()=>{
   else { refreshQuotes("main", true); }
 };
 $("#btnReload").onclick=async ()=>{ const ok=await loadPercentiles(true); render(); alert(ok?"分位已更新":"没读到数据文件（本地打开时正常）"); };
+/* 手动触发清理（兜底：一次性迁移可能已经跑过、或判据没命中） */
+$("#btnCleanup").onclick=()=>{
+  const before=state.list1.length;
+  cleanupSeed9Rows(true);
+  render();
+  const after=state.list1.length;
+  const hint=$("#cleanupHint");
+  if(after<before) alert(`已清理 ${before-after} 个多余行，现在共 ${after} 行。`);
+  else{
+    // 没删掉任何行 → 打印诊断，方便判断为什么
+    const info=state.list1.map((x,i)=>`${i+1}. ${x.name} ${x.code} id=${x.id} min="${x.min}" pe="${x.pe}" pb="${x.pb}" mpct="${x.mpct}"`).join("\n");
+    console.log("[cleanup] 未删除任何行，当前清单：\n"+info);
+    if(hint) hint.textContent="没有找到可清理的行（详见控制台）";
+    alert(`没有找到可清理的行，共 ${after} 行。\n\n已把清单明细打到浏览器控制台（F12 → Console），方便排查。`);
+  }
+};
 $("#proxyInput").value = state.proxy || "";
 $("#pctUrlInput").value = state.pctUrl || "";
 $("#btnPctUrlSave").onclick=async ()=>{
