@@ -380,8 +380,12 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-18b";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-18c";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
+/* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
+   v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
+   现在 v9 只追加 JC_ROWS，不再补 SEED1；下面这个标记用来清理已被错误补回的行。 */
+const SEED9_CLEANUP_VER = 1;
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
 const SHOW_MON = false;   // 监测页暂时不用：入口隐藏、也不拉它的行情
@@ -483,7 +487,10 @@ function migrate(s){
       return o ? Object.assign(o,{name:a[0]})
                : {id:"a"+SEED_VER+"-"+i, name:a[0], code:a[1], min:"", unit:10, pe:"", pb:"", mpct:""};
     });
-  }else{ add(s.list1, SEED1, "a"); }
+  }
+  // 注意：**不要**在 seedVer >= REBUILD_VER 时 add(s.list1, SEED1) ——
+  // 那会把用户主动删掉的预置行重新塞回来（v9 踩过：31 → 37）。
+  // 版本升级只允许追加「新增的功能行」（如 JC_ROWS），绝不复活老的 SEED1 行。
   // 韭圈儿公式行（纳斯达克100 等）：放到最前面，别让它淹没在长列表末尾
   const haveJc = new Set((s.list1||[]).map(x=>x.jc).filter(Boolean));
   const jcNew=[];
@@ -1309,6 +1316,29 @@ function ensureOrder(){
   state.list1.forEach(x=>{ if(!state.order.includes(x.code)) state.order.push(x.code); });
   state.order=state.order.filter(c=>state.list1.some(x=>x.code===c));
 }
+/* 一次性清理：v9 迁移曾把用户删掉的 SEED1 行硬补回清单（31 → 37）。
+   判据（必须同时满足，才认定是"自动补回来的"）：
+     ① id 以 a9- 开头 —— v9 的 add() 专用前缀，用户手动加的是 x-/b-/jc- 等
+     ② 分位 / PE / PB / 手填涨跌 全空，且没有 minAt / mpctAt / rev —— 用户从没碰过
+   注意不要用「存档里有没有」判断：那 31 个的存档是补行之前存的，里面本来就有它们。 */
+function cleanupSeed9Rows(){
+  if((state.seed9Cleanup||0) >= SEED9_CLEANUP_VER) return;
+  const list=state.list1||[];
+  const bad=list.filter(it=>{
+    if(!/^a9-/.test(String(it.id||""))) return false;
+    if(String(it.min??"")!=="" || String(it.pe??"")!=="" || String(it.pb??"")!=="" || String(it.mpct??"")!=="") return false;
+    if(it.minAt || it.mpctAt || it.rev) return false;      // 有过任何操作痕迹 → 用户的
+    return true;
+  });
+  if(!bad.length){ state.seed9Cleanup=SEED9_CLEANUP_VER; save(); return; }
+  const drop=new Set(bad.map(x=>x.code));
+  state.list1=state.list1.filter(x=>!drop.has(x.code));
+  if(Array.isArray(state.order)) state.order=state.order.filter(c=>!drop.has(c));
+  state.seed9Cleanup=SEED9_CLEANUP_VER;
+  save();
+  console.log("[cleanup] 移除 v9 误补的预置行：", [...drop].join(", "));
+}
+
 /* 一次性迁移：把韭圈儿行（纳斯达克100）移到清单最前面。
    只跑一次（state.jcTopVer 记住），之后用户自己拖动/排序不会再被覆盖。 */
 const JC_TOP_VER = 1;
@@ -2775,6 +2805,7 @@ async function backfillNames(){
 if(!state.sort) state.sort="order";
 ensureOrder();
 applyOrderMigration();
+cleanupSeed9Rows();
 applyJcTopMigration();
 updateRetryUI();
 if($("#verLine")){
