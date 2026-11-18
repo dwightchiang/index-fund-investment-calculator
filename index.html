@@ -382,7 +382,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-18f";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-18g";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1383,6 +1383,33 @@ function restoreJcRows(){
   save();
 }
 
+/* 一次性修正：把置顶功能行（纳指100）拉回 order 第一位。
+   起因：上一版把「新加的行」插到了它前面，用户看到的顺序变成「科创综指、纳指100」。
+   只跑一次；之后用户自己拖动不再干预。 */
+const PIN_TOP_VER = 1;
+function pinJcRowsTop(){
+  if((state.pinTopVer||0) >= PIN_TOP_VER) return;
+  ensureOrder();
+  const pinned = state.list1.filter(x=>x.formula==="jc20").map(x=>x.code);
+  if(pinned.length){
+    const head = state.order.filter(c=>pinned.includes(c));
+    const rest = state.order.filter(c=>!pinned.includes(c));
+    // 只有「pinned 不在最前面」时才调整，避免无意义地改 orderAt
+    if(head.join(",") !== state.order.slice(0, head.length).join(",")){
+      state.order = [...head, ...rest];
+      state.orderAt = Date.now();
+    }
+    // list1 同步：把功能行也排到最前
+    const rows = state.list1.filter(x=>x.formula==="jc20");
+    const others = state.list1.filter(x=>x.formula!=="jc20");
+    if(state.list1[0] && state.list1[0].formula!=="jc20"){
+      state.list1 = [...rows, ...others];
+    }
+  }
+  state.pinTopVer = PIN_TOP_VER;
+  save();
+}
+
 /* 一次性迁移：把韭圈儿行（纳斯达克100）移到清单最前面。
    只跑一次（state.jcTopVer 记住），之后用户自己拖动/排序不会再被覆盖。 */
 const JC_TOP_VER = 1;
@@ -2060,15 +2087,11 @@ async function doAdd(target){
   bucket.push(it);
   if(bucket===state.list1){
     ensureOrder();
-    // 先去掉可能已存在的同代码（ensureOrder 会把它 push 到末尾），
-    // 再插到「纳指100 那类置顶功能行之后」——这样新行在最上面，但不会把纳指100 顶下去
-    const pinned = new Set(state.list1.filter(x=>x.formula==="jc20").map(x=>x.code));
-    const head = []; let tail = [];
-    for(const c of state.order){
-      if(c===code) continue;
-      if(pinned.has(c)) head.push(c); else tail.push(c);
-    }
-    state.order = [...head, code, ...tail];
+    // 新行插在「置顶功能行（纳指100）」之后的第 2 位：
+    // 既有存在感，又不把纳指100 顶下去。同时过滤掉同代码，防止重复渲染。
+    const pinned = state.list1.filter(x=>x.formula==="jc20").map(x=>x.code);
+    const rest = state.order.filter(c=>c!==code && !pinned.includes(c));
+    state.order = [...pinned, code, ...rest];
     state.orderAt = Date.now();
   }
   save(); dlgAdd.close(); render();
@@ -2346,14 +2369,17 @@ async function refreshQuotes(scope, force){
   try{ localStorage.setItem(QTS, JSON.stringify({main:lastMainAt, mon:lastMonAt})); }catch(e){}
   const bad=codes.filter(c=>quotes[c]&&quotes[c].err).length;
   $("#dot").className="dot "+(bad===codes.length?"err":"ok");
-  // 状态栏：这里的 N 是「本次刷新涉及的代码数」（定投 + 回撤去重），
-  // 和定投页的「共 33」不是同一个数（那个只数定投）。写清楚免得困惑。
+  // 状态栏的 N = 本次刷新的代码数（定投 + 回撤去重），不是定投行数。
+  // 写清来源，避免和定投页「共 N」对不上让人困惑。
   const n1=(state.list1||[]).length, n2=(state.list2||[]).length;
   const scopeTxt = `定投${n1}+回撤${n2}→${codes.length}支`;
-  if(!tradingNow()) $("#status").textContent=`非交易时段 · ${codes.length-bad}/${codes.length} 有行情`;
-  else $("#status").textContent = bad
-    ? `${bad}/${codes.length} 无行情（${scopeTxt}）`
-    : `行情已更新 ${codes.length} 支（${scopeTxt}）`;
+  if(!tradingNow()){
+    $("#status").textContent=`非交易时段 · ${codes.length-bad}/${codes.length} 有行情（${scopeTxt}）`;
+  }else{
+    $("#status").textContent = bad
+      ? `${bad}/${codes.length} 无行情（${scopeTxt}）`
+      : `行情已更新 ${codes.length} 支（${scopeTxt}）`;
+  }
   render();
   setTimeLabels();
 }
@@ -2887,6 +2913,7 @@ applyOrderMigration();
 cleanupSeed9Rows();
 restoreJcRows();          // 一定要在 cleanup 之后：万一被删了立刻补回来
 applyJcTopMigration();
+pinJcRowsTop();           // 纳指100 拉回第一位（修上一版插到它前面的副作用）
 ensureOrder();            // 补完再跑一次：顺手清掉 order 里可能存在的重复代码
 updateRetryUI();
 if($("#verLine")){
