@@ -94,9 +94,10 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  .row2 .grid{grid-template-columns:1.25fr .8fr .7fr .85fr .85fr .8fr auto}
-  .row2 .cell{text-align:center;font-size:13px;color:var(--dim)}
-  .row2 .cell b{color:var(--fg);font-variant-numeric:tabular-nums}
+  .row2 .grid{grid-template-columns:1.5fr 1fr 1fr .9fr .85fr auto}
+  .row2 .cell{text-align:center;font-size:13px;color:var(--dim);line-height:1.25}
+  .row2 .cell .lb{display:block;font-size:10px;color:var(--gray);line-height:1.1}
+  .row2 .cell b{color:var(--fg);font-variant-numeric:tabular-nums;font-size:14px}
 
   /* ③ */
   .filters{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
@@ -398,7 +399,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-18i";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-18j";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1084,6 +1085,15 @@ function jiucaiDate(it){
   const j=(JIUCAI.items||{})[it.code]||(JIUCAI.items||{})[it.jc||""]||{};
   return j.date || "";
 }
+/* 自动分位（韭圈儿 / 蛋卷）的显示值：用于把「已获取到的分位」直接显示在输入框里，
+   而不是留空让人以为没数据。手填值优先，其次自动值。 */
+function fmtAutoPct(it){
+  const {pe,pb}=effPct(it);
+  const v=[pe,pb].filter(x=>x!==null&&x!==undefined);
+  if(!v.length) return "";
+  const m=Math.min(...v);
+  return (Math.round(m*100)/100).toString();
+}
 function minPctOf(it){
   const m=num(it.min);
   if(m!==null) return m;
@@ -1741,7 +1751,10 @@ function renderSec1(){
           <div class="nmrow"><span class="nm2">${it.name}</span>${jc?jcBadge(it):pctBadge(it)}</div>
           <span class="code2">${it.code}${jc?` · ${r.pct===null?"无分位":"分位 "+r.pct.toFixed(2)+"%"}`:""}${(!q&&!jc)?` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`:""}</span>
         </div>
-        <input inputmode="decimal" data-k="min" data-id="${it.id}" value="${it.min??""}" placeholder="分位">
+        <input inputmode="decimal" data-k="min" data-id="${it.id}"
+               value="${it.min??(jc?fmtAutoPct(it):"")}"
+               placeholder="分位"
+               ${jc&&fmtAutoPct(it)?`data-auto="1" title="韭圈儿十年分位 ${fmtAutoPct(it)}%（改这里可手填覆盖）"`:""}>
         ${chgCell}
         <div class="amt ${amtView(r).cls}">${amtView(r).txt}</div>
         <div class="ops">
@@ -1783,11 +1796,10 @@ function renderSec2(){
     return `<div class="row row2 ${r.tag}" data-id="${it.id}">
       <div class="grid">
         <div class="nmcell"><span class="nm2">${it.name}</span>
-          <span class="code2">${it.code}${noQ?` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`:""}</span>
+          <span class="code2">${it.code}${r.coef?` · 系数${r.coef.toFixed(1)}`:""}${noQ?` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`:""}</span>
         </div>
-        <div class="cell">回撤<br><b>${fmt(r.dd,1)}%</b></div>
-        <div class="cell">系数<br><b>${r.coef?r.coef.toFixed(1):"0"}</b></div>
-        <div class="cell">现价<br><b>${r.price?r.price.toFixed(2):"—"}</b></div>
+        <div class="cell"><span class="lb">回撤</span><b>${fmt(r.dd,1)}%</b></div>
+        <div class="cell"><span class="lb">现价</span><b>${r.price?r.price.toFixed(2):"—"}</b></div>
         ${chgCell}
         <div class="amt ${r.amount>0?"":"zero"}">${r.amount>0?("¥"+r.amount):"—"}</div>
         <div class="ops">
@@ -2072,9 +2084,16 @@ document.addEventListener("input", e=>{
   if(!inp.dataset || !inp.dataset.k) return;
   const it=[...state.list1,...state.list2,...state.list3].find(x=>x.id===inp.dataset.id);
   if(!it) return;
+  // 「分位」框里如果是程序自动填进去的（韭圈儿值），用户没改之前不要当成手填值写入
+  if(inp.dataset.k==="min" && inp.dataset.auto && inp.value === fmtAutoPct(it)){
+    return;                                  // 值没变 → 不算手填
+  }
   it[inp.dataset.k]=inp.value;
   it.rev=Date.now();                        // 云端合并用：这条手填记录的更新时间
-  if(inp.dataset.k==="min"){ if(inp.value==="") delete it.minAt; else it.minAt=Date.now(); }
+  if(inp.dataset.k==="min"){
+    if(inp.value==="") delete it.minAt; else it.minAt=Date.now();
+    if(inp.dataset.auto) delete inp.dataset.auto;
+  }
   if(inp.dataset.k==="mpct" || inp.dataset.k==="mpct2"){
     if(inp.value==="") delete it.mpctAt; else it.mpctAt=Date.now();
   }
@@ -2164,6 +2183,7 @@ async function doAdd(target){
     state.orderAt = Date.now();
   }
   save(); dlgAdd.close(); render();
+  scheduleCloudPush();               // 指数增删也要同步到其他设备
   // 只为这个新代码拉一次行情，顺便让「无行情/名称」当场见分晓
   delete failCache[code];
   try{ putQuote(code, await fetchQuote(code, true)); }catch(e){ putQuote(code, null); }
@@ -2714,6 +2734,7 @@ function mergeSnaps(a, b){
 function mergeRoster(remote){
   if(!remote || !remote.rows) return 0;
   let changed = 0;
+  const added=[], removed=[];
   const secs = [["l1", ()=>state.list1], ["l2", ()=>state.list2], ["l3", ()=>state.list3]];
   secs.forEach(([sec, getArr])=>{
     const arr = getArr();
@@ -2722,16 +2743,15 @@ function mergeRoster(remote){
       if(!r || !r.code) return;
       const local = have.get(r.code);
       if(r.del){
-        // 远端删过：只有当删除时间晚于本地的加入时间才删（防止把新加的打掉）
         if(local && (r.delAt||0) > (local.addedAt||0)){
           const i = arr.indexOf(local);
-          if(i>=0){ arr.splice(i,1); changed++; addTrash(sec, local, r.delAt||Date.now()); }
+          if(i>=0){ arr.splice(i,1); changed++; added.length; removed.push(r.code);
+                    addTrash(sec, local, r.delAt||Date.now()); }
         }
         return;
       }
       if(!local){
-        // 远端有、本地没有 → 补进来
-        if(sec==="l3" && !SHOW_MON) return;          // 监测已隐藏就别加
+        if(sec==="l3" && !SHOW_MON) return;
         arr.push({
           id: "r-"+sec+"-"+Math.random().toString(36).slice(2,8),
           name: r.name || r.code, code: r.code,
@@ -2740,11 +2760,22 @@ function mergeRoster(remote){
           ...(r.formula ? { formula: r.formula } : {}),
           ...(r.jc ? { jc: r.jc } : {}),
         });
-        changed++;
+        changed++; added.push(r.code);
       }
     });
   });
-  if(changed){ ensureOrder(); save(); }
+  if(changed){
+    ensureOrder(); save();
+    console.log("[roster] 新增:", added.join(",")||"—", " 删除:", removed.join(",")||"—");
+  }else{
+    // 一条都没变 → 打印对比，方便排查"为什么没同步过来"
+    const remoteCodes = (remote.rows.l1||[]).filter(r=>!r.del).map(r=>r.code);
+    const localCodes = state.list1.map(x=>x.code);
+    console.log("[roster] 无变化。远端 l1:", remoteCodes.length, "条 →", remoteCodes.join(","));
+    console.log("[roster] 本地 l1:", localCodes.length, "条 →", localCodes.join(","));
+    const miss = remoteCodes.filter(c=>!localCodes.includes(c));
+    if(miss.length) console.log("[roster] ⚠️ 远端有但本地没有（没补进来）:", miss.join(","));
+  }
   return changed;
 }
 /* 回收站：记录被删的条目，便于恢复 & 让别的设备知道要删 */
@@ -2795,20 +2826,27 @@ async function cloudPush(){
   cloudBusy=true; cloudSetStatus("上传中…");
   try{
     const cur = await cloudRead();
-    if(cur && cur.content && (cur.content.updatedAt||0) > Date.now()-1000){
-      // 云端刚被别的设备更新过，先合并再上传
-      cloudMerge(cur.content);
+    // ★ 必须先合并再上传 ★
+    // 以前只在「云端 1 秒内刚被改过」时才合并，其余情况直接用本地覆盖云端 ——
+    // 结果手机（清单较旧）一推送就把电脑刚加的指数抹掉了。
+    if(cur && cur.content){
+      applyingRemote = true;
+      mergeRoster(cur.content);        // 先吸收远端的增删，避免互相覆盖
+      cloudMerge(cur.content);         // 再吸收远端的手填值
+      applyingRemote = false;
+      render();
     }
     const payload = cloudPack();
     await gh(`/repos/${cloudRepo()}/contents/${CLOUD_FILE}`, { method:"PUT",
       body: JSON.stringify({
-        message: "chore: 同步手填分位 "+new Date().toISOString().slice(0,16).replace("T"," "),
+        message: "chore: 同步清单与分位 "+new Date().toISOString().slice(0,16).replace("T"," "),
         content: b64u8(JSON.stringify(payload, null, 1)),
         sha: cur ? cur.sha : undefined,
       }) });
     cloudErr=""; state.cloudLast={ up:Date.now(), remoteAt:payload.updatedAt, device:payload.device };
     save(); cloudSetStatus();
   }catch(e){
+    applyingRemote = false;
     cloudErr = e.message||String(e);
     cloudSetStatus("⚠️ 云端上传失败："+cloudErr+"（本地数据不受影响）");
   }finally{ cloudBusy=false; }
