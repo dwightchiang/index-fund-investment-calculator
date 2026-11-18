@@ -76,35 +76,38 @@ setTimeout(() => {
       const jc = it.formula==="jc20";
       const autoPct = jc ? fmtAutoPct(it) : "";
       const hasAuto = autoPct !== "" && (it.min===undefined || it.min==="");
-      return { autoPct, hasAuto, usesInput: !hasAuto };
+      const jcD = jiucaiDate(it);
+      const autoDate = hasAuto && jcD ? jcD.slice(5) : "";
+      return { autoPct, hasAuto, autoDate, kind: hasAuto ? "text" : "input" };
     })()
   `, sandbox);
-  check("③ ★ 有韭圈儿分位 → 显示数字不给输入框", [shown.autoPct, shown.hasAuto, shown.usesInput],
-        ["18.86", true, false]);
+  check("③ ★ 有分位 → 纯文字（不是框）", shown.kind, "text");
+  check("③b 显示 18.86%", shown.autoPct, "18.86");
+  check("③c 代码行显示数据日期 11-17", shown.autoDate, "11-17");
 
-  // 手填后应优先手填（此时要用输入框形态展示手填值）
+  // 手填后应优先手填（此时显示输入框）
   const shown2 = vm.runInContext(`
     (function(){
       const it = { min:"9.9", formula:"jc20", jc:"NDX.GI", code:"NDX" };
       const jc = it.formula==="jc20";
       const autoPct = jc ? "18.86" : "";
       const hasAuto = autoPct !== "" && (it.min===undefined || it.min==="");
-      return { hasAuto, val: hasAuto ? autoPct : it.min };
+      return { kind: hasAuto ? "text" : "input", val: it.min };
     })()
   `, sandbox);
-  check("④ 手填 9.9 → 用输入框形态、值为 9.9", [shown2.hasAuto, shown2.val], [false, "9.9"]);
+  check("④ 手填 9.9 → 输入框、值为 9.9", [shown2.kind, shown2.val], ["input", "9.9"]);
 
-  // 没有韭圈儿数据 → 用输入框
+  // 没有韭圈儿数据 → 输入框 + 问号徽标
   const shown3 = vm.runInContext(`
     (function(){
-      const jc = true;
       const autoPct = "";                       // 模拟没拿到
-      const it = { min:"", formula:"jc20" };
+      const it = { min:"" };
       const hasAuto = autoPct !== "" && (it.min===undefined || it.min==="");
-      return { hasAuto, usesInput: !hasAuto };
+      const badge = autoPct ? "ok" : "?";       // 没拿到 → 问号
+      return { kind: hasAuto ? "text" : "input", badge };
     })()
   `, sandbox);
-  check("⑤ 没拿到分位 → 显示输入框", [shown3.hasAuto, shown3.usesInput], [false, true]);
+  check("⑤ 没拿到 → 输入框 + 问号", [shown3.kind, shown3.badge], ["input", "?"]);
 
   console.log(bad ? `\n${bad} 项不符合预期` : "\n全部通过");
   process.exit(bad ? 1 : 0);
