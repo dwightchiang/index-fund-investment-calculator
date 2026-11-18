@@ -54,6 +54,7 @@ const user31 = [
 ].map(([n,c],i)=>({ id:"a-"+i, code:c, name:n, min:String(3+i*0.5), unit:10, pe:"", pb:"", mpct:"" }));
 
 // v9 误补：全空、id 是 add() 真实生成的格式 a-9-N（不是 a9-N！）
+// 注意：这些代码必须都在 SEED1 里（预置行），否则不会被清理
 const wronglyAdded = [
   { id:"a-9-0", code:"164906", name:"中概互联网LOF", min:"", unit:10, pe:"", pb:"", mpct:"" },
   { id:"a-9-1", code:"HS2083", name:"恒生科技指数", min:"", unit:10, pe:"", pb:"", mpct:"" },
@@ -97,9 +98,14 @@ setTimeout(() => {
   check("⑥ 用户自己的 31 行都在", user31.every(x=>list.includes(x.code)), true);
   check("⑦ NDX 在第一行", list[0], "NDX");
 
+  // ★ 最关键的一条：NDX 绝不能被清理删掉（上一版就是这里出的错）
+  check("⑦b ★ NDX 没有被误删", list.includes("NDX"), true);
+  check("⑦c NDX 只有一行（没重复）", list.filter(c=>c==="NDX").length, 1);
+
   const order = vm.runInContext("state.order.slice()", sandbox);
   check("⑧ 自定义顺序也清理了", wronglyAdded.some(x=>order.includes(x.code)), false);
   check("⑨ 自定义顺序首位是 NDX", order[0], "NDX");
+  check("⑨b 自定义顺序里 NDX 还在", order.includes("NDX"), true);
 
   console.log(bad ? `\n${bad} 项不符合预期` : "\n全部通过");
   process.exit(bad ? 1 : 0);

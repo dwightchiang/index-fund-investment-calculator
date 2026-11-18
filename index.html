@@ -382,7 +382,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-18d";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-18e";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1318,40 +1318,28 @@ function ensureOrder(){
   state.list1.forEach(x=>{ if(!state.order.includes(x.code)) state.order.push(x.code); });
   state.order=state.order.filter(c=>state.list1.some(x=>x.code===c));
 }
-/* 一次性清理：v9 迁移曾把用户删掉的 SEED1 行硬补回清单（31 → 37）。
-   判据（必须同时满足，才认定是"自动补回来的"）：
-     ① 分位 / PE / PB / 手填涨跌 全空，且没有 minAt / mpctAt / rev —— 用户从没碰过它
-     ② 它出现在某个「同花顺原顺序」存档里 —— 说明用户当年确实要它（存档是认可过的清单）
-        → 反过来：不满足 ② 的，视作"多出来的"
-     ③ 兜底：如果它有 a9-/a8-/a7- 这类自动生成 id 前缀，直接认定
-   为了不误删用户手加的行，②③ 至少要中一条；如果没有任何「同花顺原顺序」存档，
-   就只按 ③ 判（宁可少删）。 */
-/* 手动清理入口：设置页「清理多余预置行」按钮 / 控制台 __cleanupSeed9(true) */
+/* 一次性清理：v9 迁移曾把用户删掉的 SEED1 预置行硬补回清单（31 → 37）。
+   ★ 判据必须极其保守，宁可少删也绝不能误删用户的行 ★
+   必须同时满足以下全部条件才删：
+     ① id 匹配 /^a-9-/  —— v9 的 add() 专用格式（a-9-N）；
+        JC_ROWS 生成的是 jc-9-N，用户手加的是 x-，mk() 是 a-0-xxxx，全都不匹配
+     ② 代码在 SEED1 里 —— 只在「预置行」范围内考虑，纳斯达克100 等新功能行天然排除
+     ③ 分位/PE/PB/手填涨跌 全空，且无 minAt/mpctAt/rev —— 从没被碰过
+   这三条缺一不可。（之前漏了 ②，加了"不在存档里也算多余"，结果把纳斯达克100 删了。） */
 function cleanupSeed9Rows(force){
   if(!force && (state.seed9Cleanup||0) >= SEED9_CLEANUP_VER) return;
 
-  // 历史上所有「同花顺原顺序」存档覆盖过的代码（用户认可过的清单）
-  const known=new Set();
-  (state.orderSnaps||[]).forEach(sn=>{
-    if(sn && /同花顺|原顺序/.test(sn.name||"") && Array.isArray(sn.codes))
-      sn.codes.forEach(c=>known.add(c));
-  });
-
+  const seedCodes=new Set(SEED1.map(a=>a[1]));          // 只处理预置行
   const untouched=it=>
     String(it.min??"")==="" && String(it.pe??"")==="" && String(it.pb??"")==="" &&
     String(it.mpct??"")==="" && !it.minAt && !it.mpctAt && !it.rev;
 
   const list=state.list1||[];
-  const bad=list.filter(it=>{
-    if(!untouched(it)) return false;                    // 碰过的一律不动
-    // ① v9 的 add() 生成 id = "a"+"-"+9+"-"+i → 形如 a-9-0
-    //    （之前误写成 /^a9-/ 少了个横杠，一个都匹配不上，所以一直没删掉）
-    if(/^a-9-/.test(String(it.id||""))) return true;
-    // ② 有「同花顺原顺序」存档，但这行不在里面 → 也是多出来的
-    //    （只对"从没碰过"的行生效，见上面的 untouched 过滤）
-    if(known.size && !known.has(it.code)) return true;
-    return false;
-  });
+  const bad=list.filter(it=>
+    /^a-9-/.test(String(it.id||"")) &&                // ① v9 自动补的
+    seedCodes.has(it.code) &&                          // ② 是预置行
+    untouched(it)                                      // ③ 没碰过
+  );
 
   if(!bad.length){ state.seed9Cleanup=SEED9_CLEANUP_VER; save(); return; }
   const drop=new Set(bad.map(x=>x.code));
@@ -1363,6 +1351,31 @@ function cleanupSeed9Rows(force){
   state.lastCleanup = { at: Date.now(), codes: [...drop] };
   const el=$("#cleanupHint");
   if(el) el.textContent = `已清理 ${drop.size} 个多余预置行：${[...drop].join("、")}（共 ${state.list1.length} 行）`;
+}
+
+/* 一次性修复：清理按钮曾误删纳斯达克100，这里把它补回来。
+   只在「确实被误删过」时补：state.seed9Cleanup 已置位（=清理跑过）且清单里没有该行。
+   用户主动删除后 jcRestoreVer 已是 1，不会再被强行加回来。 */
+const JC_RESTORE_VER = 1;
+function restoreJcRows(){
+  if((state.jcRestoreVer||0) >= JC_RESTORE_VER) return;
+  state.list1 = state.list1 || [];
+  const have = new Set(state.list1.map(x=>x.code));
+  const missing = JC_ROWS.filter(r=>!have.has(r.code));
+  if(missing.length){
+    const addRows = missing.map((r,i)=>Object.assign({
+      id:"jc-r-"+i, name:r.name, code:r.code, min:"", unit:r.unit??10, pe:"", pb:"", mpct:""
+    }, r));
+    state.list1 = addRows.concat(state.list1);        // 放回最前面
+    ensureOrder();
+    state.order = addRows.map(x=>x.code).concat(state.order.filter(c=>!addRows.some(a=>a.code===c)));
+    state.orderAt = Date.now();
+    console.log("[restore] 补回被误删的功能行：", addRows.map(x=>x.code).join(", "));
+    const el=$("#cleanupHint");
+    if(el) el.textContent = `已补回被误删的「${addRows.map(x=>x.name).join("、")}」`;
+  }
+  state.jcRestoreVer = JC_RESTORE_VER;
+  save();
 }
 
 /* 一次性迁移：把韭圈儿行（纳斯达克100）移到清单最前面。
@@ -2706,13 +2719,13 @@ $("#btnCleanup").onclick=()=>{
   render();
   const after=state.list1.length;
   const hint=$("#cleanupHint");
-  if(after<before) alert(`已清理 ${before-after} 个多余行，现在共 ${after} 行。`);
+  if(after<before) alert(`已清理 ${before-after} 个多余预置行，现在共 ${after} 行。`);
   else{
     // 没删掉任何行 → 打印诊断，方便判断为什么
     const info=state.list1.map((x,i)=>`${i+1}. ${x.name} ${x.code} id=${x.id} min="${x.min}" pe="${x.pe}" pb="${x.pb}" mpct="${x.mpct}"`).join("\n");
     console.log("[cleanup] 未删除任何行，当前清单：\n"+info);
-    if(hint) hint.textContent="没有找到可清理的行（详见控制台）";
-    alert(`没有找到可清理的行，共 ${after} 行。\n\n已把清单明细打到浏览器控制台（F12 → Console），方便排查。`);
+    if(hint) hint.textContent=`没有找到可清理的行（共 ${after} 行，明细见控制台）`;
+    alert(`没有找到可清理的行，共 ${after} 行。\n\n（只会删「id 形如 a-9-、代码在预置清单里、且从没填过任何数据」的行）\n已把清单明细打到控制台，方便排查。`);
   }
 };
 $("#proxyInput").value = state.proxy || "";
@@ -2848,6 +2861,7 @@ if(!state.sort) state.sort="order";
 ensureOrder();
 applyOrderMigration();
 cleanupSeed9Rows();
+restoreJcRows();          // 一定要在 cleanup 之后：万一被删了立刻补回来
 applyJcTopMigration();
 updateRetryUI();
 if($("#verLine")){
