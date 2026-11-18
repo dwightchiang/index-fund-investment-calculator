@@ -380,11 +380,19 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-16b";     // 版本号：出问题时先对一下这个，确认用的是最新文件
-const SEED_VER = 8;
+const VER = "2026-11-18a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
 const SHOW_MON = false;   // 监测页暂时不用：入口隐藏、也不拉它的行情
+
+/* 韭圈儿覆盖、需要用「(20−分位)×系数」公式的指数
+   code  = 行情代码（NDX 用雅虎/腾讯都取不到，只靠韭圈儿给分位 + 手填涨跌）
+   jc    = 韭圈儿代码（data/jiucai.json 的 key）
+   formula = "jc20" → 走 calcJC 公式 */
+const JC_ROWS = [
+  { name:"纳斯达克100", code:"NDX", jc:"NDX.GI", formula:"jc20", unit:10 },
+];
 
 const SEED1 = [
   ["中证白酒","399997"],["CS消费50","931139"],["中证消费","1B0932"],
@@ -427,6 +435,7 @@ const NO_QUOTE = new Set(["000958", "005012"]);
 
 /* ---------- 状态 ---------- */
 let AUTO = { updated:"", items:{} };
+let JIUCAI = { generated_at:"", items:{} };   // 韭圈儿十年分位（data/jiucai.json）
 let state = load();
 let quotes = {};
 let autoOn = true, onlyHit = false, onlyTodo = false, fillMode = false, prevAuto = true, prevSort = "order", monFilter = "all", tab = "s1";
@@ -446,7 +455,13 @@ function load(){
     const s = JSON.parse(localStorage.getItem(KEY) || "null");
     if(s && s.list1 && s.list3 && s.list2) return migrate(s);
   }catch(e){}
-  return { seedVer:SEED_VER, list1:mk(SEED1,"a"), list3:mk(SEED3,"c"),
+  // 全新用户：SEED1 + 韭圈儿公式行
+  const l1 = mk(SEED1,"a").concat(
+    JC_ROWS.map((r,i)=>Object.assign({
+      id:"jc0-"+i, name:r.name, code:r.code, min:"", unit:r.unit??10, pe:"", pb:"", mpct:""
+    }, r))
+  );
+  return { seedVer:SEED_VER, list1:l1, list3:mk(SEED3,"c"),
            list2:mk(SEED2,"b",(a)=>({high:a[2],unit:a[3],manual:""})), last:{}, src:{} };
 }
 function migrate(s){
@@ -470,6 +485,14 @@ function migrate(s){
                : {id:"a"+SEED_VER+"-"+i, name:a[0], code:a[1], min:"", unit:10, pe:"", pb:"", mpct:""};
     });
   }else{ add(s.list1, SEED1, "a"); }
+  // 韭圈儿公式行（纳斯达克100 等）：按 jc 代码去重补进去
+  const haveJc = new Set((s.list1||[]).map(x=>x.jc).filter(Boolean));
+  JC_ROWS.forEach((r,i)=>{
+    if(haveJc.has(r.jc)) return;
+    if((s.list1||[]).some(x=>x.code===r.code)) return;
+    s.list1.push(Object.assign({ id:"jc-"+SEED_VER+"-"+i, name:r.name, code:r.code,
+                                 min:"", unit:r.unit??10, pe:"", pb:"", mpct:"" }, r));
+  });
   add(s.list3, SEED3, "c");
   add(s.list2, SEED2, "b", (a)=>({high:a[2],unit:a[3],manual:""}));
   s.seedVer = SEED_VER;
@@ -996,10 +1019,21 @@ async function loadPercentiles(force){
   }
 }
 function effPct(it){
+  // 手填优先 → 韭圈儿（jiucai.json）→ 蛋卷 → 上次记住的
+  const j=(JIUCAI.items||{})[it.code]||(JIUCAI.items||{})[it.jc||""]||{};
   const a=(AUTO.items||{})[it.code]||(AUTO.items||{})[txCode(it.code)||it.code]||{};
   const L=state.last[it.code]||{};
-  return { pe: num(it.pe) ?? a.pe_pct ?? L.pe ?? null,
-           pb: num(it.pb) ?? a.pb_pct ?? L.pb ?? null };
+  const jPe = j.pe_pct ?? null, jPb = j.pb_pct ?? null;
+  return { pe: num(it.pe) ?? jPe ?? a.pe_pct ?? L.pe ?? null,
+           pb: num(it.pb) ?? jPb ?? a.pb_pct ?? L.pb ?? null,
+           src: (num(it.pe)!==null||num(it.pb)!==null) ? "手填"
+              : (jPe!==null||jPb!==null) ? "韭圈儿"
+              : ((a.pe_pct??null)!==null||(a.pb_pct??null)!==null) ? "蛋卷" : "" };
+}
+/* 韭圈儿的数据日期（YYYY-MM-DD），没有则 "" */
+function jiucaiDate(it){
+  const j=(JIUCAI.items||{})[it.code]||(JIUCAI.items||{})[it.jc||""]||{};
+  return j.date || "";
 }
 function minPctOf(it){
   const m=num(it.min);
@@ -1022,6 +1056,58 @@ function chgOf(it){
 }
 
 /* ---------- 计算 ---------- */
+/* ---------- 韭圈儿十年分位（data/jiucai.json） ----------
+   与蛋卷的区别：韭圈儿覆盖美股/港股指数（NDX.GI 纳斯达克100 等），每天更新一次。 */
+const JC_CACHE = "dca-jiucai-cache";
+async function loadJiucai(force){
+  if(!force){
+    try{
+      const c=JSON.parse(localStorage.getItem(JC_CACHE)||"null");
+      if(c && c.at && Date.now()-c.at < 6*3600*1000 && c.data){
+        JIUCAI=c.data;
+        return true;
+      }
+    }catch(e){}
+  }
+  try{
+    const r=await fetch("data/jiucai.json?_="+Date.now(), {cache:"no-store"});
+    if(!r.ok) return false;
+    const j=await r.json();
+    if(!j || !j.items) return false;
+    JIUCAI=j;
+    try{ localStorage.setItem(JC_CACHE, JSON.stringify({at:Date.now(), data:j})); }catch(e){}
+    return true;
+  }catch(e){ return false; }
+}
+/* 韭圈儿专用公式：分位越高越不投，越低系数越大
+   ≥20 → 0（不投）；10–20 → 5；5–10 → 10；<5 → 20
+   金额 = (20 − 分位) × 系数   （直接按元） */
+function jcCoef(pct){
+  if(pct===null||pct===undefined) return 0;
+  if(pct>=20) return 0;
+  if(pct>=10) return 5;
+  if(pct>=5)  return 10;
+  return 20;
+}
+function calcJC(it){
+  const pct=minPctOf(it);
+  const o={pct, coef:0, amount:0, tag:"off", text:""};
+  if(pct===null){ o.text="未填分位"; return o; }
+  o.coef=jcCoef(pct);
+  if(!o.coef){ o.text="分位≥20 不投"; return o; }
+  o.amount=Math.round((20-pct)*o.coef*100)/100;
+  o.tag="hit";
+  o.text=`系数${o.coef}`;
+  return o;
+}
+/* 统一入口：这一行用哪套公式。
+   it.formula==="jc20" → 韭圈儿专用（20−分位）×系数（系数随分位檔位变化）
+   其它 → 原来的 (5−最低分位)+当日跌幅 */
+function calcRow(it){
+  const r = it.formula==="jc20" ? calcJC(it) : calc1(it);
+  r.isJC = it.formula==="jc20";
+  return r;
+}
 function calc1(it){
   const min=minPctOf(it), chg=chgOf(it);
   const o={min, chg, score:0, amount:0, tag:"off", text:""};
@@ -1071,6 +1157,12 @@ function calc2(it){
 function chipClass(v){ return v===null?"empty":v<TRIGGER?"hit":v<NEAR?"near":"off"; }
 /* 金额显示：负数原样显示，未填分位/无行情显示 — */
 function amtView(r){
+  if(r.isJC){                                   // 韭圈儿公式：(20−分位)×系数
+    if(r.pct===null) return { txt:"待填分位", cls:"zero" };
+    if(!r.coef)      return { txt:"分位≥20 不投", cls:"zero" };
+    if(r.amount===0) return { txt:"¥0", cls:"zero" };
+    return { txt:"¥"+r.amount, cls:"" };
+  }
   if(r.tag==="na"){
     // 已填分位但没行情 → 提示去填涨跌，而不是显示「—」
     return r.min===null ? { txt:"—", cls:"zero" } : { txt:"待填", cls:"zero" };
@@ -1081,6 +1173,12 @@ function amtView(r){
   if(v===0) return { txt:"¥0", cls:"zero" };
   if(v<0) return { txt:"-¥"+Math.abs(v), cls:"neg" };
   return { txt:"¥"+v, cls: r.tag==="near" ? "near" : "" };
+}
+/* 韭圈儿行的徽标：显示来源和日期，不判「过期」（它自己每天更新） */
+function jcBadge(it){
+  const d=jiucaiDate(it);
+  if(!d) return `<span class="fb fb-none" title="韭圈儿暂无数据">?</span>`;
+  return `<span class="fb fb-ok" title="韭圈儿 ${d} · 十年分位">✓</span>`;
 }
 function dateLabel(d){
   if(!d||d.length<8) return "";
@@ -1175,7 +1273,10 @@ function pctBadge(it, now){
   }
   return `<span class="fb fb-none" title="未填分位">?</span>`;
 }
-function isTodo(it){ return !pctFresh(it); }
+function isTodo(it){
+  if(it.formula==="jc20") return minPctOf(it)===null;   // 韭圈儿有分位就不算待填
+  return !pctFresh(it);
+}
 function total_all(list){ return list.length; }
 function count1(){
   return { total: state.list1.length, todo: state.list1.filter(isTodo).length };
@@ -1223,7 +1324,7 @@ function viewOrder(){
   const arr=state.order.map(c=>state.list1.find(x=>x.code===c)).filter(Boolean);
   const key=state.sort||"order";
   if(key==="order") return arr;
-  const rows=arr.map(it=>({it,r:calc1(it)}));
+  const rows=arr.map(it=>({it,r:calcRow(it)}));
   const pair=new Map(rows.map(p=>[p.it.code,p]));
   const keyOf={
     pctile:p=>p.r.min===null?1e9:p.r.min,
@@ -1432,7 +1533,7 @@ async function retryGo(){
 function renderSec1(){
   const box=$("#list1");
   // 显示顺序由 viewOrder() 决定；自定义顺序（state.order）不受排序下拉影响
-  const rows=viewOrder().map(it=>({it,r:calc1(it)}));
+  const rows=viewOrder().map(it=>({it:it, r:calcRow(it)}));
   let shown=rows;
   if(onlyHit) shown=shown.filter(x=>x.r.tag==="hit");
   if(onlyTodo) shown=shown.filter(x=>isTodo(x.it));
@@ -1446,22 +1547,27 @@ function renderSec1(){
     return;
   }
   box.innerHTML=shown.map(({it,r})=>{
-    const chg=r.chg;
+    const jc = it.formula==="jc20";
+    const chg = jc ? { pct:null, date:null, src:null } : r.chg;   // 韭圈儿行不看涨跌
     const pctTxt = chg.pct===null?"—":(chg.pct>=0?"+":"")+chg.pct.toFixed(2)+"%";
     const cls = chg.pct>0?"up":chg.pct<0?"dn":"flat";
     const q = hasQuote(it);
-    const chgCell = q
-      ? `<div class="chg ${cls}">${pctTxt}</div>`
-      : `<input inputmode="decimal" data-k="mpct" data-id="${it.id}" value="${it.mpct??""}" placeholder="涨跌%">`;
+    // 韭圈儿行：涨跌那格显示「系数」，更直观
+    const chgCell = jc
+      ? `<div class="cell" style="text-align:center;font-size:12px;color:var(--dim)">系数<br><b style="color:${r.coef?"var(--fg)":"var(--gray)"}">${r.coef||"0"}</b></div>`
+      : (q ? `<div class="chg ${cls}">${pctTxt}</div>`
+           : `<input inputmode="decimal" data-k="mpct" data-id="${it.id}" value="${it.mpct??""}" placeholder="涨跌%">`);
     const fmtAt=v=>{ if(!v) return ""; const d=new Date(typeof v==="number"?v:String(v).slice(0,10)+"T12:00:00"); return `${d.getMonth()+1}-${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; };
     const autoD=autoYmdOf(it);
-    const autoNote = (!it.min && autoD) ? ` · 蛋卷 ${autoD.slice(4,6)}-${autoD.slice(6,8)}` : "";
+    const jcD=jiucaiDate(it);
+    const autoNote = (!it.min && jcD) ? ` · 韭圈儿 ${jcD}`
+                   : ((!it.min && autoD) ? ` · 蛋卷 ${autoD.slice(4,6)}-${autoD.slice(6,8)}` : "");
     const manualNote = (it.mpctAt ? ` · 手填涨跌 ${fmtAt(it.mpctAt)}` : (it.minAt ? ` · 手填分位 ${fmtAt(it.minAt)}` : "")) + autoNote;
     return `<div class="row ${r.tag} ${rowSel(it)?"picked":""}" data-id="${it.id}">
       <div class="grid">
         <div class="nmcell">
-          <div class="nmrow"><span class="nm2">${it.name}</span>${pctBadge(it)}</div>
-          <span class="code2">${it.code}${q?"":` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`}</span>
+          <div class="nmrow"><span class="nm2">${it.name}</span>${jc?jcBadge(it):pctBadge(it)}</div>
+          <span class="code2">${it.code}${jc?` · ${r.pct===null?"无分位":"分位 "+r.pct.toFixed(2)+"%"}`:""}${(!q&&!jc)?` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`:""}</span>
         </div>
         <input inputmode="decimal" data-k="min" data-id="${it.id}" value="${it.min??""}" placeholder="分位">
         ${chgCell}
@@ -1474,15 +1580,16 @@ function renderSec1(){
       <div class="expand ${openPanels.has(it.id)?"show":""}" data-panel="${it.id}">
         <div><label>单位/元</label><input inputmode="decimal" data-k="unit" data-id="${it.id}" value="${it.unit??10}"></div>
         <div><label>手动涨跌%</label><input inputmode="decimal" data-k="mpct" data-id="${it.id}" value="${it.mpct??""}" placeholder="自动"></div>
-        <div><label>状态</label><div style="font-size:12px;color:var(--dim);padding-top:8px">${r.text} · ${
-          chg.date ? dateLabel(chg.date)+" "+(chg.src||"") : (chg.err || (chg.src? chg.src+"（实时）" : ""))
+        <div><label>状态</label><div style="font-size:12px;color:var(--dim);padding-top:8px">${
+          jc ? `(20−分位)×系数 · ${r.text}${r.amount?` → ¥${r.amount}`:""} · 韭圈儿 ${jcD||"—"}`
+             : `${r.text} · ${chg.date ? dateLabel(chg.date)+" "+(chg.src||"") : (chg.err || (chg.src? chg.src+"（实时）" : ""))}`
         }${manualNote}</div></div>
         <div style="grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap">
           <button class="mini" data-top="${it.id}">⤒ 置顶</button>
           <button class="mini" data-up="${it.id}">↑ 上移</button>
           <button class="mini" data-down="${it.id}">↓ 下移</button>
           <button class="mini" data-bottom="${it.id}">⤓ 移到底部</button>
-          ${it.min?`<button class="mini" data-clearmin="${it.id}" title="清掉手填分位，改用蛋卷自动分位">清除手填</button>`:""}
+          ${it.min?`<button class="mini" data-clearmin="${it.id}" title="清掉手填分位，改用自动分位">清除手填</button>`:""}
           <button class="mini" data-delrow="${it.id}" style="color:#f87171">删除</button>
         </div>
       </div>
@@ -1585,9 +1692,13 @@ function render(){
   }
 }
 function renderTotals(){
-  let s1=0,s2=0,sn=0,n1=0,n2=0;
+  let s1=0,s2=0,sn=0,sj=0,n1=0,n2=0,nj=0;
   state.list1.forEach(it=>{
-    const r=calc1(it);
+    const r=calcRow(it);
+    if(r.isJC){                                  // 韭圈儿公式金额单独累加
+      if(r.amount>0){ sj+=r.amount; nj++; }
+      return;
+    }
     if(r.tag==="na"||r.min===null) return;
     if(r.tag==="hit"){
       if(r.amount>0){ s1+=r.amount; n1++; }
@@ -1596,14 +1707,15 @@ function renderTotals(){
     }
   });
   state.list2.forEach(it=>{const r=calc2(it); if(r.amount>0){s2+=r.amount;n2++;}});
-  // 主数字 = 分位 <5 的触发金额；5–10 段单独用小字标注（不并入主数字）
-  $("#sum1").textContent=s1?"¥"+s1.toLocaleString("zh-CN"):"—";
+  // 主数字 = 分位 <5 的触发金额 + 韭圈儿公式行；5–10 段单独用小字标注
+  const total=s1+sj;
+  $("#sum1").textContent=total?"¥"+Math.round(total*100)/100+"":"—";
   $("#sum2").textContent=s2?"¥"+s2.toLocaleString("zh-CN"):"—";
   const nr=$("#near1");
   if(nr) nr.textContent = sn ? `+${sn.toLocaleString("zh-CN")} 临近段` : "";
   const b1=$("#badge1"), b2=$("#badge2");
-  b1.textContent=n1; b2.textContent=n2;
-  b1.className="badge"+(n1?"":" zero");
+  b1.textContent=n1+nj; b2.textContent=n2;
+  b1.className="badge"+((n1+nj)?"":" zero");
   b2.className="badge"+(n2?"":" zero");
 
   // 回撤的「重试无行情」：按钮上直接显示还有几个没行情
@@ -1771,7 +1883,7 @@ document.addEventListener("input", e=>{
 function softRefresh(){
   document.querySelectorAll("#list1 .row").forEach(row=>{
     const it=state.list1.find(x=>x.id===row.dataset.id); if(!it) return;
-    const r=calc1(it);
+    const r=calcRow(it);
     const amt=row.querySelector(".amt");
     if(amt){
       const av=amtView(r);
@@ -2540,7 +2652,7 @@ $("#btnAuto").onclick=()=>{ autoOn=!autoOn; $("#btnAuto").textContent="自动刷
 $("#btnCopy").onclick=async ()=>{
   const L=["定投 "+new Date().toLocaleString("zh-CN")];
   state.list1.forEach(it=>{
-    const r=calc1(it);
+    const r=calcRow(it);
     if(r.tag!=="na" && r.min!==null && r.amount!==0)
       L.push(`【${r.tag==="near"?"临近":"估值"}】${it.name} 分位${fmt(r.min)} 涨跌${fmt(r.chg.pct)}% → ${r.amount<0?"-¥":"¥"}${Math.abs(r.amount)}`);
   });
@@ -2638,6 +2750,7 @@ cloudSetStatus();
 restoreQuoteTime();
 render();
 loadPercentiles().then(()=>render());
+loadJiucai().then(ok=>{ if(ok) render(); });   // 韭圈儿十年分位（纳斯达克100 等）
 checkHashSync();
 backfillNames();
 cloudPull();                                 // 开机先看云端有没有新的手填值

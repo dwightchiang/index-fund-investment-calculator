@@ -1,0 +1,57 @@
+name: update-jiucai
+
+# 每天拉一次韭圈儿的十年分位（纳斯达克100 等），写进 data/jiucai.json
+# 北京时间 08:40 = UTC 00:40（据观察韭圈儿在早上 9 点前已更新；多跑一次兜底）
+# 周一到周六都跑（美股隔夜数据在早上才落地，周六也能拿到周五的）
+
+on:
+  schedule:
+    - cron: "40 0 * * 1-6"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 拉取韭圈儿分位
+        run: python tools/fetch_jiucai.py --out data/jiucai.json
+
+      - name: 校验数据
+        run: |
+          python - <<'PY'
+          import json, sys
+          d = json.load(open("data/jiucai.json", encoding="utf-8"))
+          items = d.get("items") or {}
+          print(f"指数 {len(items)} 个，生成时间 {d.get('generated_at')}")
+          for k, v in items.items():
+              print(f"  {k} {v.get('name')} PE={v.get('pe')} 分位={v.get('pe_pct')}% 数据日={v.get('date')}")
+          if not items:
+              sys.exit("❌ 一个都没取到")
+          bad = [k for k, v in items.items() if v.get("pe_pct") is None]
+          if bad:
+              sys.exit(f"❌ 这些没有分位：{bad}")
+          print("✅ 数据校验通过")
+          PY
+          echo "---- 变更文件 ----"
+          git status --short
+
+      - name: 提交
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/jiucai.json
+          if git diff --staged --quiet; then
+            echo "::warning::data/jiucai.json 没有变化（可能非交易日或抓取异常）"
+            exit 0
+          fi
+          git commit -m "chore: 更新韭圈儿十年分位 $(date -u +%Y-%m-%d)"
+          git push

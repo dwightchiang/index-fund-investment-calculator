@@ -12,6 +12,7 @@ const harness = `
 const TRIGGER = 5, NEAR = 10;
 let quotes = {};
 let AUTO = { items: {} };
+const JIUCAI = { items: {} };
 let state = { list1: [], last: {} };
 let retrySegs = new Set();
 let pickSet = new Set();

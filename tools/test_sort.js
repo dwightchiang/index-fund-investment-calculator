@@ -12,6 +12,7 @@ const harness = `
 let state = { list1: [], order: [], sort: "order" };
 let quotes = {};
 const AUTO = { items: {} };
+const JIUCAI = { items: {} };
 function num(v){ if(v===null||v===undefined||v==="") return null; const n=+v; return Number.isFinite(n)?n:null; }
 function txCode(c){ return c; }
 function save(){}
@@ -20,7 +21,7 @@ function scheduleCloudPush(){}
 const TRIGGER = 5, NEAR = 10;
 ${slice("function effPct", "function remember")}
 ${slice("function chgOf", "/* ---------- 计算")}
-${slice("function calc1", "function coefOf")}
+${slice("function calcRow", "function coefOf")}
 ${slice("function ensureOrder", "function orderMove")}
 module.exports = {
   applySort, viewOrder, ensureOrder,
