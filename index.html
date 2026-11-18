@@ -280,6 +280,7 @@
         <button id="btnExport">导出配置</button>
         <button id="btnImport">导入配置</button>
         <button id="btnSync">跨设备同步</button>
+        <button id="btnTrash">回收站</button>
         <button id="btnReset" class="ghost">恢复默认</button>
         <button id="btnAuto">自动刷新：盘中</button>
       </div>
@@ -375,6 +376,16 @@
   </div>
 </dialog>
 
+<dialog id="dlgTrash">
+  <h3 style="margin:0 0 8px;font-size:15px">回收站</h3>
+  <p class="note" style="margin:0 0 8px">删除的指数会留在这里，随时可以恢复。最多保留 100 条。</p>
+  <div id="trashList" style="max-height:50vh;overflow:auto"></div>
+  <div style="display:flex;gap:8px;margin-top:10px">
+    <button id="trashClose" style="flex:1">关闭</button>
+    <button class="ghost" id="trashClear" style="flex:1;color:#f87171">清空回收站</button>
+  </div>
+</dialog>
+
 <dialog id="dlgSnap">
   <h3 style="margin:0 0 8px;font-size:15px">顺序存档</h3>
   <p class="note" style="margin:0 0 8px">把当前的「自定义顺序」存一份，随时一键还原。存档会跟着云端同步到其他设备。</p>
@@ -387,7 +398,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-18h";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-18i";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -828,15 +839,33 @@ async function fetchDirect(code){
 async function fetchQuote(code, force){
   const key=String(code).trim().toUpperCase();
   if(!force && failCache[key]) throw new Error("无行情");
-  // 1) 自建代理（Cloudflare Worker / 自己的服务器）
+
+  // ★ 直连优先 ★
+  // 实测：浏览器直连（腾讯/东财 JSONP）0.1–3 秒，而 Worker 代理单支要 5–10 秒。
+  // 代理开着反而更慢（「代理在线」4/34 → 8/34 卡半天），所以顺序改成：
+  //   直连 → 本地代理 → 自建代理 → 旧价兜底
+  // 代理只在「直连拿不到」时才用（比如中证 93xxxx 在浏览器里东财被拒的情形）。
+  try{
+    const r = await fetchDirect(key);
+    if(r && r.price>0) return r;
+  }catch(e){ /* 直连没拿到 → 走代理 */ }
+
+  // 1) 本地代理（serve.py，本机/局域网时最快最稳）
+  if(API_OK !== false){
+    try{
+      const r=await fetchAPI(key);
+      delete failCache[key];
+      return r;
+    }catch(e){
+      const m=String(e.message||"");
+      if(m && !m.startsWith("api-")) API_OK=false;
+    }
+  }
+  // 2) 自建代理（Cloudflare Worker）
   if(proxyUsable()){
     try{ const r=await fetchViaProxy(key); delete failCache[key]; proxyFailStreak=0; return r; }
     catch(e){
       const m=String(e.message||"");
-      // 数据过期（proxy-stale）→ 短暂冷却，改走直连
-      // 业务 404（proxy-<code> 取不到）→ **不冷却**，只影响这一个代码
-      // 网络层挂了（连不上/超时）→ 连续 2 次才冷却 5 分钟
-      // 关键：批量重试时单个代码超时不应把整个代理拉黑，否则同批其余代码全被降级
       if(m==="proxy-stale"){ proxyDownUntil = Date.now()+120000; }
       else if(m && !m.startsWith("proxy-")){
         proxyFailStreak++;
@@ -844,21 +873,7 @@ async function fetchQuote(code, force){
       }
     }
   }
-  // 2) 本地代理（serve.py 提供）
-  if(API_OK !== false){
-    try{
-      const r=await fetchAPI(key);
-      delete failCache[key];
-      return r;
-    }catch(e){
-      // 只有「连不上服务」才关闭代理；404 只是这个代码没有，不影响整体
-      const m=String(e.message||"");
-      if(m && !m.startsWith("api-")) API_OK=false;
-    }
-  }
-  // 3) 浏览器直连（兜底，东财/腾讯/同花顺的 JSONP 不受 CORS 限制）
-  try{ return await fetchDirect(key); }catch(e){ /* 落到旧价兜底 */ }
-  // 4) 实在取不到：如果代理给过旧价，就显示这个旧价并标出滞后多少分钟（好过「无行情」）
+  // 3) 实在取不到：如果代理给过旧价，就显示这个旧价并标出滞后多少分钟（好过「无行情」）
   const old=staleQuotes[key];
   if(old){
     const mins=Math.max(1, Math.round(ageSecs(old.ts, old.srvNow)/60));
@@ -1945,6 +1960,37 @@ document.addEventListener("click", e=>{
     }
     return;
   }
+  const tu=e.target.closest("[data-trashuse]");
+  if(tu){
+    const i=+tu.dataset.trashuse;
+    const t=(state.trash||[])[i];
+    if(t){
+      const bucket = t.sec==="l2" ? state.list2 : t.sec==="l3" ? state.list3 : state.list1;
+      if(bucket.some(x=>x.code===t.code)){
+        alert("这个列表里已经有了，不需要恢复");
+      }else{
+        bucket.push({
+          id:"tr-"+Date.now(), name:t.name, code:t.code,
+          min:"", unit:t.unit??10, pe:"", pb:"", mpct:"", rev:0, addedAt:Date.now(),
+          ...(t.formula?{formula:t.formula}:{}), ...(t.jc?{jc:t.jc}:{}),
+          ...(t.sec==="l2"?{high:"",manual:""}:{}),
+        });
+        if(t.sec!=="l2"){ ensureOrder(); state.order.push(t.code); state.orderAt=Date.now(); }
+      }
+      state.trash.splice(i,1);
+      save(); render(); renderTrash(); scheduleCloudPush();
+    }
+    return;
+  }
+  const td=e.target.closest("[data-trashdrop]");
+  if(td){
+    const i=+td.dataset.trashdrop;
+    if((state.trash||[])[i]){
+      state.trash.splice(i,1);
+      save(); renderTrash(); scheduleCloudPush();
+    }
+    return;
+  }
   const su=e.target.closest("[data-snapuse]");
   if(su){
     const s=(state.orderSnaps||[])[+su.dataset.snapuse];
@@ -1988,11 +2034,13 @@ document.addEventListener("click", e=>{
 function askDelete(id, bucket, label){
   const it=bucket.find(x=>x.id===id);
   if(!it) return;
-  if(!confirm(`从「${label}」里删除「${it.name}」？\n删除后可以点「恢复默认」再补回来。`)) return;
+  if(!confirm(`从「${label}」里删除「${it.name}」？\n删除后可在「回收站」里恢复。`)) return;
+  const sec = bucket===state.list1 ? "l1" : bucket===state.list2 ? "l2" : "l3";
+  addTrash(sec, it, Date.now());                    // 记进回收站（也用于同步删除）
   bucket.splice(bucket.findIndex(x=>x.id===id),1);
   if(bucket===state.list1 && Array.isArray(state.order))
     state.order=state.order.filter(c=>c!==it.code);        // 同步维护展示顺序
-  save(); render();
+  save(); render(); scheduleCloudPush();
 }
 function moveTo(id, from, to){
   const i=from.findIndex(x=>x.id===id);
@@ -2103,7 +2151,8 @@ async function doAdd(target){
     btn.textContent=old; btn.disabled=false;
   }
   if(!name) name=code;
-  const it={id:"x-"+Date.now(), name, code, min:"", unit:10, pe:"", pb:"", mpct:"", rev:0};
+  const it={id:"x-"+Date.now(), name, code, min:"", unit:10, pe:"", pb:"", mpct:"", rev:0,
+            addedAt: Date.now()};
   bucket.push(it);
   if(bucket===state.list1){
     ensureOrder();
@@ -2436,6 +2485,7 @@ function packState(){
   if(state.orderAt) o.oa=state.orderAt;
   if(state.orderSnaps && state.orderSnaps.length) o.os=state.orderSnaps;
   if(state.orderVer) o.ov=state.orderVer;
+  if((state.trash||[]).length) o.tx=state.trash.slice(0,100);
   return o;
 }
 function unpackState(o){
@@ -2465,6 +2515,7 @@ function unpackState(o){
     }
     if(Array.isArray(o.os)) st.orderSnaps=o.os;
     if(o.ov) st.orderVer=o.ov;
+    if(Array.isArray(o.tx)) st.trash=o.tx;
   }
   return st;
 }
@@ -2482,6 +2533,33 @@ function applySync(text){
   probeAPI().then(()=>refreshQuotes("all", true));
   return true;
 }
+
+/* ---------- 回收站 ---------- */
+const dlgTrash=$("#dlgTrash");
+function renderTrash(){
+  const el=$("#trashList"); if(!el) return;
+  const t=state.trash||[];
+  if(!t.length){ el.innerHTML=`<p class="note" style="margin:0">回收站是空的</p>`; return; }
+  const secName={l1:"定投",l2:"回撤",l3:"监测"};
+  el.innerHTML=t.map((x,i)=>{
+    const d=new Date(x.delAt||0);
+    const when=`${d.getMonth()+1}-${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+    return `<div style="display:flex;gap:6px;align-items:center;padding:6px 0;border-bottom:1px solid #26334a">
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        ${x.name} <span style="color:#64748b;font-size:11px">${x.code} · ${secName[x.sec]||x.sec} · 删于 ${when}</span>
+      </span>
+      <button class="mini" data-trashuse="${i}">恢复</button>
+      <button class="mini" data-trashdrop="${i}" style="color:#f87171">清除</button>
+    </div>`;
+  }).join("");
+}
+$("#btnTrash").onclick=()=>{ renderTrash(); try{ dlgTrash.showModal(); }catch(e){} };
+$("#trashClose").onclick=()=>dlgTrash.close();
+$("#trashClear").onclick=()=>{
+  if(!(state.trash||[]).length){ alert("回收站已经是空的"); return; }
+  if(!confirm("清空回收站？清空后这些条目无法再恢复（也会通知其他设备不再保留）。")) return;
+  state.trash=[]; save(); renderTrash(); scheduleCloudPush();
+};
 
 /* ---------- 顺序存档（保存 / 备份 / 还原自定义顺序） ---------- */
 const dlgSnap=$("#dlgSnap");
@@ -2593,7 +2671,27 @@ function cloudPack(){
       items[sec][it.code]=o;
     });
   });
-  return { v:1, updatedAt: Date.now(), device: deviceName(), items,
+  // 清单本身也同步（增删 + 顺序）：每条记录带「它在清单里的元信息」，
+  // 删除用 tombstone（del:1 + delAt）而不是直接消失 —— 这样别的设备才知道"要删"，
+  // 而不是"本地没有 → 又给它加回来"。
+  const rows={ l1:[], l2:[], l3:[] };
+  [["l1",state.list1],["l2",state.list2],["l3",state.list3]].forEach(([sec,arr])=>{
+    arr.forEach(it=>{
+      rows[sec].push({
+        code: it.code, name: it.name,
+        at: it.addedAt || 0,          // 什么时候加进来的
+        ...(it.formula ? { formula: it.formula } : {}),
+        ...(it.jc ? { jc: it.jc } : {}),
+        ...(it.unit!==undefined ? { unit: it.unit } : {}),
+      });
+    });
+  });
+  // 回收站（已删的）也要带上，否则另一台永远不知道要删
+  (state.trash||[]).forEach(t=>{
+    const sec=t.sec||"l1";
+    (rows[sec]=rows[sec]||[]).push({ code:t.code, name:t.name, del:1, delAt:t.delAt||0 });
+  });
+  return { v:2, updatedAt: Date.now(), device: deviceName(), items, rows,
            order: Array.isArray(state.order)? state.order : [],
            orderAt: state.orderAt||0,
            orderSnaps: state.orderSnaps||[] };
@@ -2605,6 +2703,59 @@ function mergeSnaps(a, b){
     if(!old || (s.at||0) >= (old.at||0)) map.set(s.name, s);
   });
   return [...map.values()].sort((x,y)=>(y.at||0)-(x.at||0));
+}
+/* 合并清单的「增删」：并集 + tombstone。
+   规则（每条记录独立判断，绝不整份覆盖）：
+     · 远端有 del:1 且比我这边「加入/修改」更晚 → 删掉我这边
+     · 远端有、本地没有、且不是 tombstone → 加进来
+     · 本地有、远端没有 → 保留（可能是远端还没同步到）
+     · 两边都有 → 保留本地（后续由字段级 rev 合并处理数值）
+   这样两个方向都不会丢数据，删错了还能从回收站恢复。 */
+function mergeRoster(remote){
+  if(!remote || !remote.rows) return 0;
+  let changed = 0;
+  const secs = [["l1", ()=>state.list1], ["l2", ()=>state.list2], ["l3", ()=>state.list3]];
+  secs.forEach(([sec, getArr])=>{
+    const arr = getArr();
+    const have = new Map(arr.map(x=>[x.code, x]));
+    (remote.rows[sec]||[]).forEach(r=>{
+      if(!r || !r.code) return;
+      const local = have.get(r.code);
+      if(r.del){
+        // 远端删过：只有当删除时间晚于本地的加入时间才删（防止把新加的打掉）
+        if(local && (r.delAt||0) > (local.addedAt||0)){
+          const i = arr.indexOf(local);
+          if(i>=0){ arr.splice(i,1); changed++; addTrash(sec, local, r.delAt||Date.now()); }
+        }
+        return;
+      }
+      if(!local){
+        // 远端有、本地没有 → 补进来
+        if(sec==="l3" && !SHOW_MON) return;          // 监测已隐藏就别加
+        arr.push({
+          id: "r-"+sec+"-"+Math.random().toString(36).slice(2,8),
+          name: r.name || r.code, code: r.code,
+          min:"", unit: r.unit ?? 10, pe:"", pb:"", mpct:"",
+          rev: 0, addedAt: r.at || Date.now(),
+          ...(r.formula ? { formula: r.formula } : {}),
+          ...(r.jc ? { jc: r.jc } : {}),
+        });
+        changed++;
+      }
+    });
+  });
+  if(changed){ ensureOrder(); save(); }
+  return changed;
+}
+/* 回收站：记录被删的条目，便于恢复 & 让别的设备知道要删 */
+function addTrash(sec, it, delAt){
+  state.trash = state.trash || [];
+  if(state.trash.some(t=>t.code===it.code && t.sec===sec)) return;
+  state.trash.unshift({
+    sec, code: it.code, name: it.name, delAt: delAt||Date.now(),
+    formula: it.formula, jc: it.jc, unit: it.unit,
+  });
+  state.trash = state.trash.slice(0, 100);          // 最多留 100 条
 }
 function cloudMerge(remote){
   let applied=0;
@@ -2631,8 +2782,7 @@ function cloudSetStatus(msg){
   const l=state.cloudLast||{};
   const f=at=>at? new Date(at).toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}) : "—";
   el.textContent=`仓库 ${cloudRepo()} · 上次上传 ${f(l.up)} · 上次拉取 ${f(l.down)} · 云端更新 ${f(l.remoteAt)}（${l.device||"—"}）`
-    + `　·　注意：云端同步只同步「手填的分位/涨跌」，不同步指数的增删；`
-    + `在一台设备加了新指数，另一台要用「跨设备同步」的同步码带过去。`;
+    + `　·　同步内容：指数的增删、顺序、手填的分位/涨跌、顺序存档。删掉的会进回收站，可随时恢复。`;
 }
 function scheduleCloudPush(){
   if(!cloudToken() || applyingRemote) return;
@@ -2669,17 +2819,33 @@ async function cloudPull(){
     const cur = await cloudRead();
     if(!cur){ cloudErr=""; cloudSetStatus("云端还没有存档"); return; }
     applyingRemote = true;
-    let n = cloudMerge(cur.content);
-    // 顺序：哪台设备整理得晚用哪台的
+    // ① 清单本身（增删）：并集 + tombstone，先做这个，后面的字段合并才有对象可合并
+    let n = mergeRoster(cur.content);
+    // ② 手填字段（分位/涨跌 等）
+    n += cloudMerge(cur.content);
+    // ③ 顺序：哪台设备整理得晚用哪台的
     if(Array.isArray(cur.content.order) && (cur.content.orderAt||0) > (state.orderAt||0)){
       const valid=cur.content.order.filter(c=>state.list1.some(x=>x.code===c));
       if(valid.length){ state.order=valid; state.orderAt=cur.content.orderAt||0; n++; }
     }
-    // 顺序存档：按名称合并，时间新者胜，两边独有的都保留
+    // ④ 顺序存档：按名称合并，时间新者胜，两边独有的都保留
     if(Array.isArray(cur.content.orderSnaps)){
       const before=(state.orderSnaps||[]).length;
       state.orderSnaps=mergeSnaps(state.orderSnaps, cur.content.orderSnaps);
       if(state.orderSnaps.length!==before) n++;
+    }
+    // ⑤ 回收站：两边合并（按 code+sec 去重）
+    if(Array.isArray(cur.content.trash)){
+      const map=new Map((state.trash||[]).map(t=>[t.sec+"|"+t.code, t]));
+      cur.content.trash.forEach(t=>{
+        if(!t || !t.code) return;
+        const k=(t.sec||"l1")+"|"+t.code;
+        const old=map.get(k);
+        if(!old || (t.delAt||0) > (old.delAt||0)) map.set(k, t);
+      });
+      const before=(state.trash||[]).length;
+      state.trash=[...map.values()].sort((a,b)=>(b.delAt||0)-(a.delAt||0)).slice(0,100);
+      if(state.trash.length!==before) n++;
     }
     applyingRemote = false;
     cloudErr="";
