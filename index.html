@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0f172a">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📈</text></svg>">
 <title>指数定投计算器</title>
@@ -295,7 +296,11 @@
       </div>
       <div style="margin-top:10px">
         <label>云端自动同步 · GitHub token（需 repo 权限，只存本机浏览器，同步码/导出不含它）</label>
-        <input id="cloudTokenInput" type="password" placeholder="ghp_…（留空 = 关闭云端同步）" style="margin-top:4px" autocomplete="off">
+        <!-- 包一层 form 并阻止提交：只是为了消掉 Chrome 的 "Password field is not contained in a form" 提示 -->
+        <form onsubmit="return false" autocomplete="on" style="margin:0">
+          <input id="cloudTokenInput" type="password" name="gh-token" placeholder="ghp_…（留空 = 关闭云端同步）"
+                 style="margin-top:4px" autocomplete="new-password">
+        </form>
         <button class="mini" id="btnCloudSave" style="margin-top:6px">保存 token</button>
         <button class="mini" id="btnCloudClear">清除</button>
         <button class="mini" id="btnCloudNow">立即同步</button>
@@ -382,7 +387,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-18g";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-18h";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -791,6 +796,35 @@ async function fetchAPI(code){
   if(!(q.price>0)) throw new Error("api-返回里没有价格");
   return q;
 }
+/* 只走浏览器直连（跳过代理）。
+   用途：代理慢/被拉黑时，剩余代码直接走腾讯/东财/同花顺 JSONP，通常比代理快一个量级。 */
+async function fetchDirect(code){
+  const key=String(code).trim().toUpperCase();
+  const all=fetchersFor(key);
+  const cached=(state.src||{})[key];
+  if(cached){
+    const hit=all.find(f=>f.id===cached);
+    if(hit){ try{ return await hit.fn(); }catch(e){} }
+  }
+  for(const f of all){
+    try{
+      const r=await f.fn();
+      state.src=state.src||{};
+      if(state.src[key]!==f.id){ state.src[key]=f.id; save(); }
+      delete failCache[key];
+      return r;
+    }catch(e){}
+  }
+  // 直连失败 → 用上次成功的值兜底
+  const last=lastGood[key];
+  if(last && Date.now()-last.at < 3*24*3600*1000){
+    const mins=Math.round((Date.now()-last.at)/60000);
+    const ago = mins<60 ? mins+"分前" : (mins<1440 ? Math.round(mins/60)+"小时前" : Math.round(mins/1440)+"天前");
+    return {...last, src:"上次·"+ago};
+  }
+  failCache[key]=true;
+  throw new Error("无行情");
+}
 async function fetchQuote(code, force){
   const key=String(code).trim().toUpperCase();
   if(!force && failCache[key]) throw new Error("无行情");
@@ -823,21 +857,7 @@ async function fetchQuote(code, force){
     }
   }
   // 3) 浏览器直连（兜底，东财/腾讯/同花顺的 JSONP 不受 CORS 限制）
-  const all=fetchersFor(code);
-  const cached=(state.src||{})[key];
-  if(cached){
-    const hit=all.find(f=>f.id===cached);
-    if(hit){ try{ return await hit.fn(); }catch(e){} }
-  }
-  for(const f of all){
-    try{
-      const r=await f.fn();
-      state.src=state.src||{};
-      if(state.src[key]!==f.id){ state.src[key]=f.id; save(); }
-      delete failCache[key];
-      return r;
-    }catch(e){}
-  }
+  try{ return await fetchDirect(key); }catch(e){ /* 落到旧价兜底 */ }
   // 4) 实在取不到：如果代理给过旧价，就显示这个旧价并标出滞后多少分钟（好过「无行情」）
   const old=staleQuotes[key];
   if(old){
@@ -2331,8 +2351,10 @@ async function refreshQuotes(scope, force){
       const chunk=todo.slice(i,i+CH);
       const t0=Date.now();
       if(batchBudget <= 0){
+        // 预算用完 → 剩下的改「浏览器直连」，不再走代理
+        // （代理单支要 5–10 秒，34 支串行能拖过 2 分钟；直连的腾讯/东财反而快）
         await pool(chunk, 4, async c=>{
-          try{ mark(c, await fetchQuote(c, force)); }catch(err){ mark(c, null); }
+          try{ mark(c, await fetchDirect(c)); }catch(err){ mark(c, null); }
         });
         continue;
       }
@@ -2343,9 +2365,9 @@ async function refreshQuotes(scope, force){
         chunk.forEach(c=>mark(c, got.items ? got.items[c] : got[c], batchViaProxy));
       }catch(e){
         batchBudget -= (Date.now()-t0);
-        // 批量失败就退回逐个
+        // 批量失败就退回逐个（直连）
         await pool(chunk, 4, async c=>{
-          try{ mark(c, await fetchQuote(c, force)); }catch(err){ mark(c, null); }
+          try{ mark(c, await fetchDirect(c)); }catch(err){ mark(c, null); }
         });
       }
     }
@@ -2608,7 +2630,9 @@ function cloudSetStatus(msg){
   if(!cloudToken()){ el.textContent="未配置 token：云端同步关闭，手填值只存本机（同步码仍可用）"; return; }
   const l=state.cloudLast||{};
   const f=at=>at? new Date(at).toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}) : "—";
-  el.textContent=`仓库 ${cloudRepo()} · 上次上传 ${f(l.up)} · 上次拉取 ${f(l.down)} · 云端更新 ${f(l.remoteAt)}（${l.device||"—"}）`;
+  el.textContent=`仓库 ${cloudRepo()} · 上次上传 ${f(l.up)} · 上次拉取 ${f(l.down)} · 云端更新 ${f(l.remoteAt)}（${l.device||"—"}）`
+    + `　·　注意：云端同步只同步「手填的分位/涨跌」，不同步指数的增删；`
+    + `在一台设备加了新指数，另一台要用「跨设备同步」的同步码带过去。`;
 }
 function scheduleCloudPush(){
   if(!cloudToken() || applyingRemote) return;
