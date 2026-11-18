@@ -380,7 +380,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-18a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-18b";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 const REBUILD_VER = 7;
 const TRIGGER = 5, NEAR = 10, AUTO_MS = 60000;
@@ -455,12 +455,11 @@ function load(){
     const s = JSON.parse(localStorage.getItem(KEY) || "null");
     if(s && s.list1 && s.list3 && s.list2) return migrate(s);
   }catch(e){}
-  // 全新用户：SEED1 + 韭圈儿公式行
-  const l1 = mk(SEED1,"a").concat(
-    JC_ROWS.map((r,i)=>Object.assign({
-      id:"jc0-"+i, name:r.name, code:r.code, min:"", unit:r.unit??10, pe:"", pb:"", mpct:""
-    }, r))
-  );
+  // 全新用户：韭圈儿公式行 + SEED1
+  const jcL1 = JC_ROWS.map((r,i)=>Object.assign({
+    id:"jc0-"+i, name:r.name, code:r.code, min:"", unit:r.unit??10, pe:"", pb:"", mpct:""
+  }, r));
+  const l1 = jcL1.concat(mk(SEED1,"a"));
   return { seedVer:SEED_VER, list1:l1, list3:mk(SEED3,"c"),
            list2:mk(SEED2,"b",(a)=>({high:a[2],unit:a[3],manual:""})), last:{}, src:{} };
 }
@@ -485,14 +484,20 @@ function migrate(s){
                : {id:"a"+SEED_VER+"-"+i, name:a[0], code:a[1], min:"", unit:10, pe:"", pb:"", mpct:""};
     });
   }else{ add(s.list1, SEED1, "a"); }
-  // 韭圈儿公式行（纳斯达克100 等）：按 jc 代码去重补进去
+  // 韭圈儿公式行（纳斯达克100 等）：放到最前面，别让它淹没在长列表末尾
   const haveJc = new Set((s.list1||[]).map(x=>x.jc).filter(Boolean));
+  const jcNew=[];
   JC_ROWS.forEach((r,i)=>{
     if(haveJc.has(r.jc)) return;
     if((s.list1||[]).some(x=>x.code===r.code)) return;
-    s.list1.push(Object.assign({ id:"jc-"+SEED_VER+"-"+i, name:r.name, code:r.code,
-                                 min:"", unit:r.unit??10, pe:"", pb:"", mpct:"" }, r));
+    jcNew.push(Object.assign({ id:"jc-"+SEED_VER+"-"+i, name:r.name, code:r.code,
+                               min:"", unit:r.unit??10, pe:"", pb:"", mpct:"" }, r));
   });
+  if(jcNew.length){
+    s.list1 = jcNew.concat(s.list1||[]);
+    if(Array.isArray(s.order)) s.order = jcNew.map(x=>x.code).concat(s.order);
+    else s.order = (s.list1||[]).map(x=>x.code);
+  }
   add(s.list3, SEED3, "c");
   add(s.list2, SEED2, "b", (a)=>({high:a[2],unit:a[3],manual:""}));
   s.seedVer = SEED_VER;
@@ -1271,10 +1276,21 @@ function pctBadge(it, now){
     return fresh ? `<span class="fb fb-ok" title="蛋卷：${wk}数据已更新（${dd}）">✓</span>`
                  : `<span class="fb fb-stale" title="蛋卷：${wk}(${dd}) 的数据，需更新">!</span>`;
   }
+  // 蛋卷/韭圈儿都不覆盖、但以前记住过分位的（state.last）→ 也显示 ✓，别误判成未填
+  const L=(state.last||{})[it.code];
+  if(L && (L.pe!==null&&L.pe!==undefined || L.pb!==null&&L.pb!==undefined)){
+    return `<span class="fb fb-ok" title="上次记住的分位 PE=${L.pe??"—"} PB=${L.pb??"—"}">✓</span>`;
+  }
   return `<span class="fb fb-none" title="未填分位">?</span>`;
 }
 function isTodo(it){
   if(it.formula==="jc20") return minPctOf(it)===null;   // 韭圈儿有分位就不算待填
+  // 蛋卷/韭圈儿都没覆盖、但有 state.last 记住的分位 → 不算待填（和徽标口径一致）
+  if(!it.min){
+    const L=(state.last||{})[it.code];
+    const hasAuto = autoYmdOf(it) !== "";
+    if(!hasAuto && L && (L.pe!==null&&L.pe!==undefined || L.pb!==null&&L.pb!==undefined)) return false;
+  }
   return !pctFresh(it);
 }
 function total_all(list){ return list.length; }
@@ -1293,6 +1309,26 @@ function ensureOrder(){
   state.list1.forEach(x=>{ if(!state.order.includes(x.code)) state.order.push(x.code); });
   state.order=state.order.filter(c=>state.list1.some(x=>x.code===c));
 }
+/* 一次性迁移：把韭圈儿行（纳斯达克100）移到清单最前面。
+   只跑一次（state.jcTopVer 记住），之后用户自己拖动/排序不会再被覆盖。 */
+const JC_TOP_VER = 1;
+function applyJcTopMigration(){
+  if((state.jcTopVer||0) >= JC_TOP_VER) return;
+  const jcCodes = new Set((state.list1||[]).filter(x=>x.formula==="jc20").map(x=>x.code));
+  if(jcCodes.size){
+    // 清单：把 jc 行提到最前，其余保持相对顺序
+    const jcRows=(state.list1||[]).filter(x=>jcCodes.has(x.code));
+    const rest=(state.list1||[]).filter(x=>!jcCodes.has(x.code));
+    state.list1=jcRows.concat(rest);
+    // 自定义顺序：同样把 jc 提到最前
+    ensureOrder();
+    state.order=jcRows.map(x=>x.code).concat(state.order.filter(c=>!jcCodes.has(c)));
+    state.orderAt=Date.now();
+  }
+  state.jcTopVer=JC_TOP_VER;
+  save();
+}
+
 /* 一次性迁移：把「同花顺原顺序」（截图 2026-11-14）应用到现有清单，并存一份存档。
    只跑一次（state.orderVer 记住）。截图里没有的代码按原相对顺序排到末尾。 */
 const ORDER_VER = 2;   // 2 = 按截图 2026-11-14 的 37 个顺序
@@ -2739,6 +2775,7 @@ async function backfillNames(){
 if(!state.sort) state.sort="order";
 ensureOrder();
 applyOrderMigration();
+applyJcTopMigration();
 updateRetryUI();
 if($("#verLine")){
   $("#verLine").textContent = `版本 ${VER}　·　文件 ${location.pathname.split("/").pop()||"index.html"}`
