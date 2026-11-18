@@ -51,7 +51,7 @@ const documentObj = {
 const sandbox = {
   console,
   document: documentObj,
-  window: {},
+  window: { addEventListener() {} },
   location: { pathname: "/index.html", hash: "", hostname: "127.0.0.1", origin: "http://127.0.0.1" },
   navigator: { clipboard: { writeText: async () => {} }, userAgent: "node" },
   localStorage: {

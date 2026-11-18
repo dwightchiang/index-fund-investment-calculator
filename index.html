@@ -94,10 +94,20 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  .row2 .grid{grid-template-columns:1.5fr 1fr 1fr .9fr .85fr auto}
-  .row2 .cell{text-align:center;font-size:13px;color:var(--dim);line-height:1.25}
-  .row2 .cell .lb{display:block;font-size:10px;color:var(--gray);line-height:1.1}
-  .row2 .cell b{color:var(--fg);font-variant-numeric:tabular-nums;font-size:14px}
+  /* 回撤行：两行式。上行 名称+金额，下行 回撤/系数/现价/涨跌 四等分 */
+  .row2{padding:8px 10px}
+  .g2head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+  .g2head .nmcell{flex:1;min-width:0}
+  .g2head .amt{font-size:16px;flex:none}
+  .g2head .ops{flex:none;display:flex}
+  .g2body{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;
+          background:#0b1220;border-radius:8px;padding:6px 4px}
+  .g2body .cell{text-align:center;font-size:13px;color:var(--dim);line-height:1.25;
+                display:flex;flex-direction:column;gap:1px;min-width:0}
+  .g2body .cell .lb{font-size:10px;color:var(--gray);line-height:1.1}
+  .g2body .cell b{color:var(--fg);font-variant-numeric:tabular-nums;font-size:14px;
+                  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .g2body input{font-size:13px;padding:3px 5px;text-align:center;border-radius:6px}
 
   /* ③ */
   .filters{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
@@ -399,7 +409,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-18j";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-18k";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1752,9 +1762,9 @@ function renderSec1(){
           <span class="code2">${it.code}${jc?` · ${r.pct===null?"无分位":"分位 "+r.pct.toFixed(2)+"%"}`:""}${(!q&&!jc)?` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`:""}</span>
         </div>
         <input inputmode="decimal" data-k="min" data-id="${it.id}"
-               value="${it.min??(jc?fmtAutoPct(it):"")}"
+               value="${(it.min!==undefined && it.min!=="") ? it.min : (jc?fmtAutoPct(it):"")}"
                placeholder="分位"
-               ${jc&&fmtAutoPct(it)?`data-auto="1" title="韭圈儿十年分位 ${fmtAutoPct(it)}%（改这里可手填覆盖）"`:""}>
+               ${jc&&fmtAutoPct(it)&&(it.min===undefined||it.min==="")?`data-auto="1" title="韭圈儿十年分位 ${fmtAutoPct(it)}%（改这里可手填覆盖）"`:""}>
         ${chgCell}
         <div class="amt ${amtView(r).cls}">${amtView(r).txt}</div>
         <div class="ops">
@@ -1794,18 +1804,23 @@ function renderSec2(){
       ? `<input inputmode="decimal" data-k="mpct2" data-id="${it.id}" value="${it.mpct2??""}" placeholder="涨跌%">`
       : `<div class="chg ${pctCls}">${pctTxt}</div>`;
     return `<div class="row row2 ${r.tag}" data-id="${it.id}">
-      <div class="grid">
+      <div class="g2head">
         <div class="nmcell"><span class="nm2">${it.name}</span>
-          <span class="code2">${it.code}${r.coef?` · 系数${r.coef.toFixed(1)}`:""}${noQ?` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`:""}</span>
+          <span class="code2">${it.code}${noQ?` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`:""}</span>
         </div>
-        <div class="cell"><span class="lb">回撤</span><b>${fmt(r.dd,1)}%</b></div>
-        <div class="cell"><span class="lb">现价</span><b>${r.price?r.price.toFixed(2):"—"}</b></div>
-        ${chgCell}
         <div class="amt ${r.amount>0?"":"zero"}">${r.amount>0?("¥"+r.amount):"—"}</div>
         <div class="ops">
           <button class="ico" data-gear="${it.id}">⚙</button>
           <button class="ico del" data-del2="${it.id}">×</button>
         </div>
+      </div>
+      <div class="g2body">
+        <div class="cell"><span class="lb">回撤</span><b>${fmt(r.dd,1)}%</b></div>
+        <div class="cell"><span class="lb">系数</span><b>${r.coef?r.coef.toFixed(1):"—"}</b></div>
+        <div class="cell"><span class="lb">现价</span><b>${r.price?r.price.toFixed(2):"—"}</b></div>
+        <div class="cell">${noQ
+          ? `<span class="lb">涨跌</span><input inputmode="decimal" data-k="mpct2" data-id="${it.id}" value="${it.mpct2??""}" placeholder="涨跌%">`
+          : `<span class="lb">涨跌</span><b class="${pctCls}" style="color:${p>0?'var(--red)':p<0?'var(--green)':'var(--dim)'}">${pctTxt}</b>`}</div>
       </div>
       <div class="expand ${openPanels.has(it.id)?"show":""}" data-panel="${it.id}">
         <div><label>最高点</label><input inputmode="decimal" data-k="high" data-id="${it.id}" value="${it.high??""}"></div>
@@ -2319,7 +2334,13 @@ async function fetchBatch(codes){
   return { items: j.items||{}, now: j.now ? +j.now : 0 };
 }
 /* 批量只在代理/本地接口可用时走；代理挂了就别试，直接逐个走浏览器 */
-function canBatch(){ return proxyUsable() || API_OK!==false; }
+/* 批量只在「本地 serve.py」可用时走 —— 它一次真能并发拿多支。
+   Cloudflare Worker 的 /quotes 是串行的（单支 5–10 秒），走批量反而慢，
+   所以 Worker 开着也不用批量，直接逐个直连更快。 */
+function canBatch(){
+  if(API_OK === false) return false;                 // 本地代理不可用 → 不批量
+  return isLocalHost();                              // 只有本机/局域网才批
+}
 
 /* 自动刷新的范围 = 定投全部 + 回撤。
    以前只刷「分位 <10」的，导致分位 ≥10 的（中证红利 61、50AH 55…）永远没行情、一直显示「待填」。
@@ -3158,7 +3179,20 @@ loadJiucai().then(ok=>{ if(ok) render(); });   // 韭圈儿十年分位（纳斯
 checkHashSync();
 backfillNames();
 cloudPull();                                 // 开机先看云端有没有新的手填值
-setInterval(()=>{ if(cloudToken()) cloudPull(); }, 5*60*1000);
+// 自动拉取：60 秒一次（原来是 5 分钟，等太久）。Secret gist/文件很小，不心疼流量。
+setInterval(()=>{ if(cloudToken() && !cloudBusy && !applyingRemote) cloudPull(); }, 60*1000);
+// 切回页面/重新可见时立刻拉一次（手机上从后台切回来最常见）
+if(typeof document.addEventListener==="function"){
+  document.addEventListener("visibilitychange", ()=>{
+    if(document.visibilityState==="visible" && cloudToken() && !cloudBusy)
+      setTimeout(()=>cloudPull(), 300);
+  });
+}
+if(typeof window!=="undefined" && typeof window.addEventListener==="function"){
+  window.addEventListener("focus", ()=>{
+    if(cloudToken() && !cloudBusy) cloudPull();
+  });
+}
 // 启动只拉「定投里分位 <10 + 回撤」；监测已隐藏不再拉
 probeAPI().then(()=>refreshQuotes("priority"));
 </script>
