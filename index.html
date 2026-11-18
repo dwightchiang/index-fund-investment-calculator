@@ -382,7 +382,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-18e";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-18f";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1317,6 +1317,11 @@ function ensureOrder(){
   }
   state.list1.forEach(x=>{ if(!state.order.includes(x.code)) state.order.push(x.code); });
   state.order=state.order.filter(c=>state.list1.some(x=>x.code===c));
+  // 去重保险：order 里同一代码出现两次会导致「同一行渲染两遍」
+  if(new Set(state.order).size !== state.order.length){
+    const seen=new Set();
+    state.order=state.order.filter(c=> seen.has(c) ? false : (seen.add(c), true));
+  }
 }
 /* 一次性清理：v9 迁移曾把用户删掉的 SEED1 预置行硬补回清单（31 → 37）。
    ★ 判据必须极其保守，宁可少删也绝不能误删用户的行 ★
@@ -2053,7 +2058,19 @@ async function doAdd(target){
   if(!name) name=code;
   const it={id:"x-"+Date.now(), name, code, min:"", unit:10, pe:"", pb:"", mpct:"", rev:0};
   bucket.push(it);
-  if(bucket===state.list1){ ensureOrder(); state.order.unshift(code); }   // 新加的放最上面
+  if(bucket===state.list1){
+    ensureOrder();
+    // 先去掉可能已存在的同代码（ensureOrder 会把它 push 到末尾），
+    // 再插到「纳指100 那类置顶功能行之后」——这样新行在最上面，但不会把纳指100 顶下去
+    const pinned = new Set(state.list1.filter(x=>x.formula==="jc20").map(x=>x.code));
+    const head = []; let tail = [];
+    for(const c of state.order){
+      if(c===code) continue;
+      if(pinned.has(c)) head.push(c); else tail.push(c);
+    }
+    state.order = [...head, code, ...tail];
+    state.orderAt = Date.now();
+  }
   save(); dlgAdd.close(); render();
   // 只为这个新代码拉一次行情，顺便让「无行情/名称」当场见分晓
   delete failCache[code];
@@ -2116,7 +2133,12 @@ function doBulk(target){
     if(pe!==undefined && pe!=="-"){ if(bucket===state.list1) it.min=pe; else it.pe=pe; }
     if(pb!==undefined && pb!=="-") it.pb=pb;
   });
-  if(newCodes.length){ ensureOrder(); state.order=[...newCodes, ...state.order]; }
+  if(newCodes.length){
+    ensureOrder();
+    const set=new Set(newCodes);
+    state.order=[...newCodes, ...state.order.filter(c=>!set.has(c))];
+    state.orderAt=Date.now();
+  }
   save(); $("#dlgBulk").close(); render(); refreshQuotes();
   backfillNames();          // 只写了代码的行，自动补中文名
   scheduleCloudPush();      // 批量导入的分位也推云端
@@ -2324,12 +2346,14 @@ async function refreshQuotes(scope, force){
   try{ localStorage.setItem(QTS, JSON.stringify({main:lastMainAt, mon:lastMonAt})); }catch(e){}
   const bad=codes.filter(c=>quotes[c]&&quotes[c].err).length;
   $("#dot").className="dot "+(bad===codes.length?"err":"ok");
-  // 状态栏说清楚「多少个」「共多少」，别再让人以为是清单总数
-  const total1=(state.list1||[]).length + (state.list2||[]).length;
+  // 状态栏：这里的 N 是「本次刷新涉及的代码数」（定投 + 回撤去重），
+  // 和定投页的「共 33」不是同一个数（那个只数定投）。写清楚免得困惑。
+  const n1=(state.list1||[]).length, n2=(state.list2||[]).length;
+  const scopeTxt = `定投${n1}+回撤${n2}→${codes.length}支`;
   if(!tradingNow()) $("#status").textContent=`非交易时段 · ${codes.length-bad}/${codes.length} 有行情`;
   else $("#status").textContent = bad
-    ? `${bad}/${codes.length} 无行情（清单共 ${total1}）`
-    : `行情已更新 ${codes.length} 个`;
+    ? `${bad}/${codes.length} 无行情（${scopeTxt}）`
+    : `行情已更新 ${codes.length} 支（${scopeTxt}）`;
   render();
   setTimeLabels();
 }
@@ -2863,6 +2887,7 @@ applyOrderMigration();
 cleanupSeed9Rows();
 restoreJcRows();          // 一定要在 cleanup 之后：万一被删了立刻补回来
 applyJcTopMigration();
+ensureOrder();            // 补完再跑一次：顺手清掉 order 里可能存在的重复代码
 updateRetryUI();
 if($("#verLine")){
   $("#verLine").textContent = `版本 ${VER}　·　文件 ${location.pathname.split("/").pop()||"index.html"}`
