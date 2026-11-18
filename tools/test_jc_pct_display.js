@@ -74,20 +74,37 @@ setTimeout(() => {
     (function(){
       const it = state.list1.find(x=>x.code==='NDX');
       const jc = it.formula==="jc20";
-      return (it.min!==undefined && it.min!=="") ? it.min : (jc?fmtAutoPct(it):"");
+      const autoPct = jc ? fmtAutoPct(it) : "";
+      const hasAuto = autoPct !== "" && (it.min===undefined || it.min==="");
+      return { autoPct, hasAuto, usesInput: !hasAuto };
     })()
   `, sandbox);
-  check("③ ★ 输入框里显示 18.86（不再是空）", shown, "18.86");
+  check("③ ★ 有韭圈儿分位 → 显示数字不给输入框", [shown.autoPct, shown.hasAuto, shown.usesInput],
+        ["18.86", true, false]);
 
-  // 手填后应优先手填
+  // 手填后应优先手填（此时要用输入框形态展示手填值）
   const shown2 = vm.runInContext(`
     (function(){
       const it = { min:"9.9", formula:"jc20", jc:"NDX.GI", code:"NDX" };
       const jc = it.formula==="jc20";
-      return (it.min!==undefined && it.min!=="") ? it.min : (jc?fmtAutoPct(it):"");
+      const autoPct = jc ? "18.86" : "";
+      const hasAuto = autoPct !== "" && (it.min===undefined || it.min==="");
+      return { hasAuto, val: hasAuto ? autoPct : it.min };
     })()
   `, sandbox);
-  check("④ 手填 9.9 优先", shown2, "9.9");
+  check("④ 手填 9.9 → 用输入框形态、值为 9.9", [shown2.hasAuto, shown2.val], [false, "9.9"]);
+
+  // 没有韭圈儿数据 → 用输入框
+  const shown3 = vm.runInContext(`
+    (function(){
+      const jc = true;
+      const autoPct = "";                       // 模拟没拿到
+      const it = { min:"", formula:"jc20" };
+      const hasAuto = autoPct !== "" && (it.min===undefined || it.min==="");
+      return { hasAuto, usesInput: !hasAuto };
+    })()
+  `, sandbox);
+  check("⑤ 没拿到分位 → 显示输入框", [shown3.hasAuto, shown3.usesInput], [false, true]);
 
   console.log(bad ? `\n${bad} 项不符合预期` : "\n全部通过");
   process.exit(bad ? 1 : 0);

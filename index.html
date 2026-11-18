@@ -83,6 +83,13 @@
   .amt.near{color:var(--amber)}   /* 分位 5–10：算出来了，但没到触发线 */
   .chg{text-align:center;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
   .chg.up{color:var(--red)} .chg.dn{color:var(--green)} .chg.flat{color:var(--dim);font-weight:400}
+  /* 韭圈儿自动分位：只读展示（双击可改手填） */
+  .pctro{background:#0b1220;border:1px solid var(--line);border-radius:8px;
+         padding:6px 8px;font-size:15px;font-weight:600;text-align:center;
+         font-variant-numeric:tabular-nums;color:var(--fg);cursor:pointer;
+         user-select:none;-webkit-user-select:none}
+  .pctro i{font-style:normal;font-size:11px;color:var(--gray);margin-left:1px}
+  .pctro:active{transform:scale(.98)}
   .tag{font-size:10px;padding:1px 6px;border-radius:999px;border:1px solid var(--line);color:var(--dim);white-space:nowrap}
   .tag.hit{background:rgba(34,197,94,.15);border-color:var(--green);color:var(--green)}
   .tag.near{background:rgba(245,158,11,.15);border-color:var(--amber);color:var(--amber)}
@@ -94,20 +101,15 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：两行式。上行 名称+金额，下行 回撤/系数/现价/涨跌 四等分 */
+  /* 回撤行：单行紧凑布局（系数并入代码行） */
   .row2{padding:8px 10px}
-  .g2head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
-  .g2head .nmcell{flex:1;min-width:0}
-  .g2head .amt{font-size:16px;flex:none}
-  .g2head .ops{flex:none;display:flex}
-  .g2body{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;
-          background:#0b1220;border-radius:8px;padding:6px 4px}
-  .g2body .cell{text-align:center;font-size:13px;color:var(--dim);line-height:1.25;
-                display:flex;flex-direction:column;gap:1px;min-width:0}
-  .g2body .cell .lb{font-size:10px;color:var(--gray);line-height:1.1}
-  .g2body .cell b{color:var(--fg);font-variant-numeric:tabular-nums;font-size:14px;
-                  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .g2body input{font-size:13px;padding:3px 5px;text-align:center;border-radius:6px}
+  .row2 .grid{grid-template-columns:1.5fr .95fr 1.05fr .95fr .8fr auto;gap:6px}
+  .row2 .cell{text-align:center;font-size:13px;color:var(--dim);line-height:1.2;
+              display:flex;flex-direction:column;gap:0;min-width:0}
+  .row2 .cell .lb{font-size:10px;color:var(--gray);line-height:1.1}
+  .row2 .cell b{color:var(--fg);font-variant-numeric:tabular-nums;font-size:13.5px;
+                overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row2 input{font-size:12px;padding:3px 4px;text-align:center;border-radius:6px}
 
   /* ③ */
   .filters{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
@@ -409,7 +411,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-18k";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-18l";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1755,16 +1757,21 @@ function renderSec1(){
     const autoNote = (!it.min && jcD) ? ` · 韭圈儿 ${jcD}`
                    : ((!it.min && autoD) ? ` · 蛋卷 ${autoD.slice(4,6)}-${autoD.slice(6,8)}` : "");
     const manualNote = (it.mpctAt ? ` · 手填涨跌 ${fmtAt(it.mpctAt)}` : (it.minAt ? ` · 手填分位 ${fmtAt(it.minAt)}` : "")) + autoNote;
+    // 分位那一格：
+    //   · jc 行且已拿到韭圈儿值、用户没手填过 → 直接显示数字（不给输入框）
+    //   · 其余（jc 行没拿到 / 普通行）→ 输入框
+    const autoPct = jc ? fmtAutoPct(it) : "";
+    const hasAuto = autoPct !== "" && (it.min===undefined || it.min==="");
+    const pctCell = hasAuto
+      ? `<div class="pctro" title="韭圈儿十年分位 ${autoPct}%（双击可手填覆盖）" data-editmin="${it.id}">${autoPct}<i>%</i></div>`
+      : `<input inputmode="decimal" data-k="min" data-id="${it.id}" value="${it.min??""}" placeholder="分位">`;
     return `<div class="row ${r.tag} ${rowSel(it)?"picked":""}" data-id="${it.id}">
       <div class="grid">
         <div class="nmcell">
           <div class="nmrow"><span class="nm2">${it.name}</span>${jc?jcBadge(it):pctBadge(it)}</div>
-          <span class="code2">${it.code}${jc?` · ${r.pct===null?"无分位":"分位 "+r.pct.toFixed(2)+"%"}`:""}${(!q&&!jc)?` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`:""}</span>
+          <span class="code2">${it.code}${(!q&&!jc)?` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`:""}${hasAuto?" · 分位来自韭圈儿":""}</span>
         </div>
-        <input inputmode="decimal" data-k="min" data-id="${it.id}"
-               value="${(it.min!==undefined && it.min!=="") ? it.min : (jc?fmtAutoPct(it):"")}"
-               placeholder="分位"
-               ${jc&&fmtAutoPct(it)&&(it.min===undefined||it.min==="")?`data-auto="1" title="韭圈儿十年分位 ${fmtAutoPct(it)}%（改这里可手填覆盖）"`:""}>
+        ${pctCell}
         ${chgCell}
         <div class="amt ${amtView(r).cls}">${amtView(r).txt}</div>
         <div class="ops">
@@ -1804,23 +1811,20 @@ function renderSec2(){
       ? `<input inputmode="decimal" data-k="mpct2" data-id="${it.id}" value="${it.mpct2??""}" placeholder="涨跌%">`
       : `<div class="chg ${pctCls}">${pctTxt}</div>`;
     return `<div class="row row2 ${r.tag}" data-id="${it.id}">
-      <div class="g2head">
+      <div class="grid">
         <div class="nmcell"><span class="nm2">${it.name}</span>
-          <span class="code2">${it.code}${noQ?` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`:""}</span>
+          <span class="code2">${it.code} · 系数 ${r.coef?r.coef.toFixed(1):"—"}${noQ?` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`:""}</span>
         </div>
+        <div class="cell"><span class="lb">回撤</span><b>${fmt(r.dd,1)}%</b></div>
+        <div class="cell"><span class="lb">现价</span><b>${r.price?r.price.toFixed(2):"—"}</b></div>
+        <div class="cell">${noQ
+          ? `<span class="lb">涨跌</span><input inputmode="decimal" data-k="mpct2" data-id="${it.id}" value="${it.mpct2??""}" placeholder="%">`
+          : `<span class="lb">涨跌</span><b style="color:${p>0?'var(--red)':p<0?'var(--green)':'var(--dim)'}">${pctTxt}</b>`}</div>
         <div class="amt ${r.amount>0?"":"zero"}">${r.amount>0?("¥"+r.amount):"—"}</div>
         <div class="ops">
           <button class="ico" data-gear="${it.id}">⚙</button>
           <button class="ico del" data-del2="${it.id}">×</button>
         </div>
-      </div>
-      <div class="g2body">
-        <div class="cell"><span class="lb">回撤</span><b>${fmt(r.dd,1)}%</b></div>
-        <div class="cell"><span class="lb">系数</span><b>${r.coef?r.coef.toFixed(1):"—"}</b></div>
-        <div class="cell"><span class="lb">现价</span><b>${r.price?r.price.toFixed(2):"—"}</b></div>
-        <div class="cell">${noQ
-          ? `<span class="lb">涨跌</span><input inputmode="decimal" data-k="mpct2" data-id="${it.id}" value="${it.mpct2??""}" placeholder="涨跌%">`
-          : `<span class="lb">涨跌</span><b class="${pctCls}" style="color:${p>0?'var(--red)':p<0?'var(--green)':'var(--dim)'}">${pctTxt}</b>`}</div>
       </div>
       <div class="expand ${openPanels.has(it.id)?"show":""}" data-panel="${it.id}">
         <div><label>最高点</label><input inputmode="decimal" data-k="high" data-id="${it.id}" value="${it.high??""}"></div>
@@ -1976,6 +1980,22 @@ document.addEventListener("click", e=>{
     if(pickSet.has(id)) pickSet.delete(id); else pickSet.add(id);
     rrow.classList.toggle("picked", pickSet.has(id) || segSel(state.list1.find(x=>x.id===id)||{}));
     updateRetryUI();
+    return;
+  }
+  // 韭圈儿只读分位 → 双击/长按换成输入框，让用户可以手填覆盖
+  const ro=e.target.closest("[data-editmin]");
+  if(ro){
+    const id=ro.dataset.editmin;
+    const it=state.list1.find(x=>x.id===id);
+    if(it){
+      const v=prompt(`手填「${it.name}」的分位（留空 = 用韭圈儿自动值）`, fmtAutoPct(it));
+      if(v!==null){
+        if(v.trim()===""){ delete it.min; delete it.minAt; }
+        else { it.min=v.trim(); it.minAt=Date.now(); }
+        it.rev=Date.now();
+        save(); render(); scheduleCloudPush();
+      }
+    }
     return;
   }
   const cmin=e.target.closest("[data-clearmin]");
