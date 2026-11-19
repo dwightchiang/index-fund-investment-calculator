@@ -98,7 +98,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-19a 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-19b 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -409,7 +409,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-19a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-19b";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1149,27 +1149,68 @@ function chgOf(it){
 
 /* ---------- 计算 ---------- */
 /* ---------- 韭圈儿十年分位（data/jiucai.json） ----------
-   与蛋卷的区别：韭圈儿覆盖美股/港股指数（NDX.GI 纳斯达克100 等），每天更新一次。 */
+   与蛋卷的区别：韭圈儿覆盖美股/港股指数（NDX.GI 纳斯达克100 等），每天 10:00 后更新。
+   优先读仓库里的 data/jiucai.json（Action 每天写）；如果发现数据过期，
+   再直接请求韭圈儿的公开接口兜底（实测它允许跨域），这样即使 Action 没跑也能拿到新值。 */
 const JC_CACHE = "dca-jiucai-cache";
+const JC_API = "https://ai2.jiucaishuo.com/api/index-valuation/detail?code=";
+async function fetchJiucaiLive(code){
+  const r = await fetchWithTimeout(JC_API + encodeURIComponent(code), 12000);
+  if(!r.ok) throw new Error("jc-"+r.status);
+  const j = await r.json();
+  const table = j.table || [];
+  const pe = table.find(x=>x.name==="市盈率") || {};
+  const pb = table.find(x=>x.name==="市净率") || {};
+  if(pe.percent===undefined || pe.percent===null) throw new Error("jc-无分位");
+  return {
+    name: (j.header||{}).name || code,
+    pe: pe.latest, pe_pct: pe.percent, pe_avg: pe.avg,
+    pb: pb.latest, pb_pct: pb.percent,
+    level: (j.header||{}).level_desc||"",
+    date: j.update_time || "",
+  };
+}
 async function loadJiucai(force){
   if(!force){
     try{
       const c=JSON.parse(localStorage.getItem(JC_CACHE)||"null");
       if(c && c.at && Date.now()-c.at < 6*3600*1000 && c.data){
         JIUCAI=c.data;
-        return true;
       }
     }catch(e){}
   }
-  try{
-    const r=await fetch("data/jiucai.json?_="+Date.now(), {cache:"no-store"});
-    if(!r.ok) return false;
-    const j=await r.json();
-    if(!j || !j.items) return false;
-    JIUCAI=j;
-    try{ localStorage.setItem(JC_CACHE, JSON.stringify({at:Date.now(), data:j})); }catch(e){}
-    return true;
-  }catch(e){ return false; }
+  // 先读仓库文件
+  if(!JIUCAI.items || !Object.keys(JIUCAI.items).length || force){
+    try{
+      const r=await fetchWithTimeout("data/jiucai.json?_="+Date.now(), 12000);
+      if(r.ok){
+        const j=await r.json();
+        if(j && j.items) JIUCAI=j;
+      }
+    }catch(e){}
+  }
+  // 数据过期（或没有）→ 直接问韭圈儿接口
+  const needLive = JC_ROWS.some(r=>{
+    const it = (JIUCAI.items||{})[r.jc] || (JIUCAI.items||{})[r.code];
+    return !it || !isJcFresh({ code:r.code, jc:r.jc });
+  });
+  if(needLive){
+    let changed=false;
+    for(const row of JC_ROWS){
+      try{
+        const live = await fetchJiucaiLive(row.jc);
+        JIUCAI.items = JIUCAI.items || {};
+        const old = JIUCAI.items[row.jc];
+        if(!old || (old.date||"") < (live.date||"")){ JIUCAI.items[row.jc]=live; changed=true; }
+      }catch(e){ /* 直连拿不到，保持原样 */ }
+    }
+    if(changed){
+      JIUCAI.generated_at = new Date().toLocaleString("zh-CN");
+      JIUCAI.source = "韭圈儿（页面直连）";
+    }
+  }
+  try{ localStorage.setItem(JC_CACHE, JSON.stringify({at:Date.now(), data:JIUCAI})); }catch(e){}
+  return !!(JIUCAI.items && Object.keys(JIUCAI.items).length);
 }
 /* 韭圈儿专用公式：分位越高越不投，越低系数越大
    ≥20 → 0（不投）；10–20 → 5；5–10 → 10；<5 → 20

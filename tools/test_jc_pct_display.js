@@ -62,9 +62,12 @@ vm.runInContext(code, sandbox, { filename: "inline" });
 setTimeout(() => {
   vm.runInContext("JIUCAI = " + JSON.stringify(jiucai), sandbox);
 
-  // fmtAutoPct 应返回 18.86
+  // 分位值随数据变化，用文件里的实际值做期望
+  const wantPct = String(jiucai.items["NDX.GI"].pe_pct);
+
+  // fmtAutoPct 应返回当前分位
   const v = vm.runInContext("fmtAutoPct(state.list1.find(x=>x.code==='NDX'))", sandbox);
-  check("① fmtAutoPct 返回 18.86", v, "18.86");
+  check("① fmtAutoPct 返回当前分位", v, wantPct);
 
   // 关键：min 是空字符串时，也要回退到自动值（之前 ?? 判定失败）
   const it = vm.runInContext("state.list1.find(x=>x.code==='NDX')", sandbox);
@@ -82,7 +85,7 @@ setTimeout(() => {
     })()
   `, sandbox);
   check("③ ★ 有分位 → 纯文字（不是框）", shown.kind, "text");
-  check("③b 显示 18.86%", shown.autoPct, "18.86");
+  check("③b 显示当前分位", shown.autoPct, wantPct);
   // 日期跟着 data/jiucai.json 走，这里只验证格式是 MM-DD
   check("③c 代码行显示数据日期（MM-DD）", /^\d{2}-\d{2}$/.test(shown.autoDate), true);
 

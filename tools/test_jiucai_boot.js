@@ -85,14 +85,18 @@ setTimeout(() => {
 
     vm.runInContext("JIUCAI = " + JSON.stringify(jiucai), sandbox);
     const r = vm.runInContext("calcRow(state.list1.find(x=>x.code==='NDX'))", sandbox);
-    console.log(`✅ 计算：分位=${r.pct} 系数=${r.coef} 金额=¥${r.amount}`);
-    if (r.pct !== 18.86) { console.log("❌ 分位不对"); process.exit(1); }
-    if (r.coef !== 5) { console.log("❌ 系数不对（应 5）"); process.exit(1); }
-    if (r.amount !== 5.7) { console.log("❌ 金额不对（应 5.7）"); process.exit(1); }
+    const wantPct = jiucai.items["NDX.GI"].pe_pct;
+    // 期望金额按公式现算：(20-分位)×系数
+    const wantCoef = wantPct >= 20 ? 0 : wantPct >= 10 ? 5 : wantPct >= 5 ? 10 : 20;
+    const wantAmt = Math.round((20 - wantPct) * wantCoef * 100) / 100;
+    console.log(`✅ 计算：分位=${r.pct} 系数=${r.coef} 金额=¥${r.amount}（期望 ¥${wantAmt}）`);
+    if (r.pct !== wantPct) { console.log("❌ 分位不对"); process.exit(1); }
+    if (r.coef !== wantCoef) { console.log("❌ 系数不对"); process.exit(1); }
+    if (r.amount !== wantAmt) { console.log("❌ 金额不对"); process.exit(1); }
 
     const av = vm.runInContext("amtView(calcRow(state.list1.find(x=>x.code==='NDX')))", sandbox);
     console.log(`✅ 显示：${av.txt}  cls=${av.cls || "(默认)"}`);
-    if (av.txt !== "¥5.7") { console.log("❌ 显示不对"); process.exit(1); }
+    if (av.txt !== "¥" + wantAmt) { console.log("❌ 显示不对"); process.exit(1); }
 
     if (errors.length) { console.log("❌ 异步异常:", errors); process.exit(1); }
     console.log("\n全部通过");
