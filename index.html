@@ -98,7 +98,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-18m 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-19a 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -409,7 +409,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-18m";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-19a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1095,6 +1095,29 @@ function jiucaiDate(it){
   const j=(JIUCAI.items||{})[it.code]||(JIUCAI.items||{})[it.jc||""]||{};
   return j.date || "";
 }
+/* 韭圈儿的数据「应该是哪一天的」。
+   美股在北京时间凌晨收盘，韭圈儿约 10:00 更新，所以：
+     · 11-19 周四 10:00 后 → 应该是 11-18（周三）收盘的那份
+     · 11-19 周四 10:00 前 → 韭圈儿还没更新，最新的只能是 11-17（周二）
+   周末/周一：往前推到最近的工作日（周一早上要的是上周五的）。 */
+function jcExpectedDate(now){
+  now = now || new Date();
+  const d = new Date(now);
+  const hm = d.getHours()*100 + d.getMinutes();
+  if(hm < 1000) d.setDate(d.getDate()-1);      // 10 点前：昨天那份还没更新出来，再退一天
+  // 10 点后：要的是「昨天」那份 → 再退一天；但 10 点前已经退过一次，这里统一处理
+  d.setDate(d.getDate()-1);                    // 数据永远是「前一个交易日」
+  while(d.getDay()===0 || d.getDay()===6) d.setDate(d.getDate()-1);
+  return ymd(d);
+}
+function isJcFresh(it, now){
+  const dj = jiucaiDate(it);
+  if(!dj) return false;
+  const got = dj.replace(/-/g,"");
+  const want = jcExpectedDate(now);
+  return got >= want;
+}
+
 /* 自动分位（韭圈儿 / 蛋卷）的显示值：用于把「已获取到的分位」直接显示在输入框里，
    而不是留空让人以为没数据。手填值优先，其次自动值。 */
 function fmtAutoPct(it){
@@ -1752,22 +1775,24 @@ function renderSec1(){
     const fmtAt=v=>{ if(!v) return ""; const d=new Date(typeof v==="number"?v:String(v).slice(0,10)+"T12:00:00"); return `${d.getMonth()+1}-${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; };
     const autoD=autoYmdOf(it);
     const jcD=jiucaiDate(it);
-    // 分位那一格：
-    //   · jc 行且已拿到韭圈儿值、用户没手填过 → 跟涨跌一样纯文字显示（`18.86%`），
-    //     代码行显示数据日期（如 `11.17`）
-    //   · 没拿到 / 用户手填 → 输入框；没拿到时徽标显示「?」
+    // 分位那一格（jc 行，如纳斯达克100）：
+    //   美股在北京时间凌晨收盘，韭圈儿约 10:00 更新「前一交易日」的数据。
+    //   所以只有「拿到的数据日期 = 我们期望的那个交易日」时才用纯文字显示；
+    //   数据是旧的（还没更新到今天该有的那份）→ 退回输入框，允许手动填。
     const autoPct = jc ? fmtAutoPct(it) : "";
-    const hasAuto = autoPct !== "" && (it.min===undefined || it.min==="");
-    const autoDate = hasAuto && jcD ? jcD.slice(5) : "";        // "2026-11-17" → "11-17"
+    const jcFresh = jc && isJcFresh(it);
+    const hasAuto = autoPct !== "" && (it.min===undefined || it.min==="") && jcFresh;
+    const autoDate = jc && jcD ? jcD.slice(5) : "";
     const pctCell = hasAuto
-      ? `<div class="chg flat pcttxt" title="${autoDate||""} 数据（点一下可手填覆盖）" data-editmin="${it.id}">${autoPct}%</div>`
-      : `<input inputmode="decimal" data-k="min" data-id="${it.id}" value="${it.min??""}" placeholder="分位">`;
+      ? `<div class="chg flat pcttxt" title="${autoDate} 数据（点一下可手填覆盖）" data-editmin="${it.id}">${autoPct}%</div>`
+      : `<input inputmode="decimal" data-k="min" data-id="${it.id}" value="${it.min??""}"
+               placeholder="${autoPct?"分位(旧"+autoDate+")":"分位"}">`;
     const manualNote = (it.mpctAt ? ` · 手填涨跌 ${fmtAt(it.mpctAt)}` : (it.minAt ? ` · 手填分位 ${fmtAt(it.minAt)}` : ""))
       + (autoDate ? ` · ${autoDate}` : "");
     return `<div class="row ${r.tag} ${rowSel(it)?"picked":""}" data-id="${it.id}">
       <div class="grid">
         <div class="nmcell">
-          <div class="nmrow"><span class="nm2">${it.name}</span>${jc?(autoPct?jcBadge(it):`<span class="fb fb-none" title="没获取到前一交易日的分位">?</span>`):pctBadge(it)}</div>
+          <div class="nmrow"><span class="nm2">${it.name}</span>${jc?(hasAuto?jcBadge(it):`<span class="fb ${autoPct?"fb-stale":"fb-none"}" title="${autoPct?"数据还是 "+autoDate+" 的，没更新到前一交易日":"没获取到前一交易日的分位"}">?</span>`):pctBadge(it)}</div>
           <span class="code2">${it.code}${autoDate?` · ${autoDate}`:""}${(!q&&!jc)?` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`:""}</span>
         </div>
         ${pctCell}

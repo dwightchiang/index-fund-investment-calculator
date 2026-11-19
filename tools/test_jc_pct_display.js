@@ -83,7 +83,8 @@ setTimeout(() => {
   `, sandbox);
   check("③ ★ 有分位 → 纯文字（不是框）", shown.kind, "text");
   check("③b 显示 18.86%", shown.autoPct, "18.86");
-  check("③c 代码行显示数据日期 11-17", shown.autoDate, "11-17");
+  // 日期跟着 data/jiucai.json 走，这里只验证格式是 MM-DD
+  check("③c 代码行显示数据日期（MM-DD）", /^\d{2}-\d{2}$/.test(shown.autoDate), true);
 
   // 手填后应优先手填（此时显示输入框）
   const shown2 = vm.runInContext(`
