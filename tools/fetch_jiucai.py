@@ -68,15 +68,33 @@ def pick(table, name):
 
 
 def fetch_one(code, name):
+    """取韭圈儿的分位。
+
+    注意 detail 接口里有两套值，刷新时间可能不一样：
+      · header.value / header.percent   ← 页面顶部 id-metric-bar（更新快，约 10:00）
+      · table[市盈率].latest / .percent  ← 页面底部 id-status-desc（慢一拍）
+    两套值在「当天刚更新」的那段时间会不一致。这里优先用 header（新），
+    但如果 header 为空才退回 table；同时把两份都记下来便于排查。
+    """
     js = get_json(f"/index-valuation/detail?code={urllib.parse.quote(code)}")
     header = js.get("header") or {}
     table = js.get("table") or []
     pe_row = pick(table, "市盈率")
     pb_row = pick(table, "市净率")
+
+    h_pe = header.get("value")
+    h_pct = header.get("percent")
+    t_pe = pe_row.get("latest")
+    t_pct = pe_row.get("percent")
+
+    # header 是「顶部那份」，更新更快；只有它缺失时才用 table
+    pe = h_pe if h_pe is not None else t_pe
+    pe_pct = h_pct if h_pct is not None else t_pct
+
     item = {
         "name": header.get("name") or name,
-        "pe": pe_row.get("latest"),
-        "pe_pct": pe_row.get("percent"),
+        "pe": pe,
+        "pe_pct": pe_pct,
         "pe_avg": pe_row.get("avg"),
         "pb": pb_row.get("latest"),
         "pb_pct": pb_row.get("percent"),
@@ -84,7 +102,14 @@ def fetch_one(code, name):
         "metric": js.get("metric") or "pe",
         "date": js.get("update_time") or "",
         "status_text": js.get("status_text") or "",
+        # 两份原始值都留着，万一以后发现口径不同好对照
+        "src": {
+            "header": {"pe": h_pe, "pct": h_pct},
+            "table": {"pe": t_pe, "pct": t_pct},
+        },
     }
+    if h_pct is not None and t_pct is not None and abs(h_pct - t_pct) > 0.01:
+        print(f"  ⚠️ {name}: header={h_pct}% 与 table={t_pct}% 不一致，采用 header（更新更快）")
     if item["pe_pct"] is None:
         raise RuntimeError(f"{code} 没拿到 PE 分位：{js}")
     return item

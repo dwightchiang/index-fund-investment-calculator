@@ -98,7 +98,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-19b 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-20a 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -409,7 +409,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-19b";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-20a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1158,15 +1158,21 @@ async function fetchJiucaiLive(code){
   const r = await fetchWithTimeout(JC_API + encodeURIComponent(code), 12000);
   if(!r.ok) throw new Error("jc-"+r.status);
   const j = await r.json();
+  const header = j.header || {};
   const table = j.table || [];
   const pe = table.find(x=>x.name==="市盈率") || {};
   const pb = table.find(x=>x.name==="市净率") || {};
-  if(pe.percent===undefined || pe.percent===null) throw new Error("jc-无分位");
+  // header 是页面顶部那份（约 10:00 更新），table 是底部那份（慢一拍）→ 优先 header
+  const hPct = header.percent;
+  const tPct = pe.percent;
+  const pct = (hPct!==undefined && hPct!==null) ? hPct : tPct;
+  const peVal = (header.value!==undefined && header.value!==null) ? header.value : pe.latest;
+  if(pct===undefined || pct===null) throw new Error("jc-无分位");
   return {
-    name: (j.header||{}).name || code,
-    pe: pe.latest, pe_pct: pe.percent, pe_avg: pe.avg,
+    name: header.name || code,
+    pe: peVal, pe_pct: pct, pe_avg: pe.avg,
     pb: pb.latest, pb_pct: pb.percent,
-    level: (j.header||{}).level_desc||"",
+    level: header.level_desc || "",
     date: j.update_time || "",
   };
 }
