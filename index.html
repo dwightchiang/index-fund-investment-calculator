@@ -98,7 +98,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-20a 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-20b 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -409,7 +409,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-20a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-20b";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1153,6 +1153,16 @@ function chgOf(it){
    优先读仓库里的 data/jiucai.json（Action 每天写）；如果发现数据过期，
    再直接请求韭圈儿的公开接口兜底（实测它允许跨域），这样即使 Action 没跑也能拿到新值。 */
 const JC_CACHE = "dca-jiucai-cache";
+let JCFileAt = 0;   // 上次成功读取 data/jiucai.json 的时间（避免每次渲染都去 fetch）
+/* 版本变化时清掉韭圈儿缓存：避免「代码改了但一直吃旧缓存」的困惑
+   （每次发版 VER 会变，旧缓存自动失效一次） */
+const JC_VER_KEY = "dca-jiucai-ver";
+try{
+  if(localStorage.getItem(JC_VER_KEY) !== VER){
+    localStorage.removeItem(JC_CACHE);
+    localStorage.setItem(JC_VER_KEY, VER);
+  }
+}catch(e){}
 const JC_API = "https://ai2.jiucaishuo.com/api/index-valuation/detail?code=";
 async function fetchJiucaiLive(code){
   const r = await fetchWithTimeout(JC_API + encodeURIComponent(code), 12000);
@@ -1177,25 +1187,41 @@ async function fetchJiucaiLive(code){
   };
 }
 async function loadJiucai(force){
+  // ① 先用本地缓存顶着（秒开），但**只要数据不是「该有的那份」就必须继续往下走**
   if(!force){
     try{
       const c=JSON.parse(localStorage.getItem(JC_CACHE)||"null");
-      if(c && c.at && Date.now()-c.at < 6*3600*1000 && c.data){
-        JIUCAI=c.data;
-      }
+      if(c && c.at && Date.now()-c.at < 6*3600*1000 && c.data) JIUCAI=c.data;
     }catch(e){}
   }
-  // 先读仓库文件
-  if(!JIUCAI.items || !Object.keys(JIUCAI.items).length || force){
+  // ② 判断缓存够不够新（不能只看日期，还要看值对不对）
+  const stale = JC_ROWS.some(r=>{
+    const it=(JIUCAI.items||{})[r.jc]||(JIUCAI.items||{})[r.code];
+    return !it || !isJcFresh({ code:r.code, jc:r.jc });
+  }) || !JIUCAI.items || !Object.keys(JIUCAI.items).length;
+
+  // ③ 需要新数据 → 读仓库文件（Action 写的），别被缓存挡住
+  //    注意：即使「日期够新」也要读一次文件 —— 同一天里韭圈儿可能二次修正分位
+  //    （实测 10:15 是 18.86%，12:20 变 15.61%），缓存里的值可能已经过时。
+  if(force || stale || Date.now()-(JCFileAt||0) > 10*60*1000){
     try{
       const r=await fetchWithTimeout("data/jiucai.json?_="+Date.now(), 12000);
       if(r.ok){
         const j=await r.json();
-        if(j && j.items) JIUCAI=j;
+        if(j && j.items){
+          // 逐项比较：文件里的数据日期更新、或同一天但分位不同 → 采用文件值
+          JC_ROWS.forEach(row=>{
+            const f=(j.items||{})[row.jc];
+            const old=(JIUCAI.items||{})[row.jc];
+            if(f && (!old || (f.date||"") >= (old.date||""))) JIUCAI=j;
+          });
+          if(!JIUCAI.items || !Object.keys(JIUCAI.items).length) JIUCAI=j;
+          JCFileAt = Date.now();
+        }
       }
     }catch(e){}
   }
-  // 数据过期（或没有）→ 直接问韭圈儿接口
+  // ④ 文件也不够新 → 直接问韭圈儿接口（header 那份，10 点就更新）
   const needLive = JC_ROWS.some(r=>{
     const it = (JIUCAI.items||{})[r.jc] || (JIUCAI.items||{})[r.code];
     return !it || !isJcFresh({ code:r.code, jc:r.jc });
@@ -1207,7 +1233,14 @@ async function loadJiucai(force){
         const live = await fetchJiucaiLive(row.jc);
         JIUCAI.items = JIUCAI.items || {};
         const old = JIUCAI.items[row.jc];
-        if(!old || (old.date||"") < (live.date||"")){ JIUCAI.items[row.jc]=live; changed=true; }
+        // 只要「日期更新」或「同一天但分位不同」，都采纳实时值
+        const newerDate = !old || (old.date||"") < (live.date||"");
+        const sameDayDiff = old && old.date===live.date && old.pe_pct!==live.pe_pct;
+        if(newerDate || sameDayDiff){
+          JIUCAI.items[row.jc]=live;
+          changed=true;
+          console.log(`[jiucai] 更新 ${row.jc}: ${old?old.date+"/"+old.pe_pct+"%":"(无)"} → ${live.date}/${live.pe_pct}%`);
+        }
       }catch(e){ /* 直连拿不到，保持原样 */ }
     }
     if(changed){
