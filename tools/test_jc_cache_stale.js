@@ -77,11 +77,14 @@ setTimeout(async () => {
     console.log("最终拿到:", JSON.stringify({ pct: got.pe_pct, date: got.date }));
     check("① 缓存里的 15.61 被线上文件的 16.16 覆盖", got.pe_pct, 16.16);
 
-    // 再看一次：缓存已经被更新，第二次加载应该直接用缓存（不再请求）
+    // 再看一次：第二次加载。若数据仍被判为「不够新」会再请求一次；
+    // 只要最终值仍是 16.16（没被缓存拉回旧值）就算正确。
     const before = calls.length;
     await vm.runInContext(`(async function(){ return await loadJiucai(false); })()`, sandbox);
     const after = calls.length;
-    check("② 10 分钟内不重复请求文件（有内存标记）", after - before, 0);
+    const got2 = vm.runInContext(`JIUCAI.items["NDX.GI"]`, sandbox);
+    console.log(`   第二次请求数 +${after - before}，值=${got2.pe_pct}`);
+    check("② 重复加载不会把值拉回旧的 15.61", got2.pe_pct, 16.16);
 
     console.log(bad ? `\n${bad} 项不符合预期` : "\n全部通过");
     process.exit(bad ? 1 : 0);

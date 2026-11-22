@@ -98,7 +98,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-20b 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-23a 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -222,6 +222,7 @@
       <button id="fFill">📝 填表模式</button>
       <button id="fExpandAll" style="display:none">⤵ 展开全部</button>
       <button id="fSnap">存档</button>
+      <button id="fYW" title="按「百分位数据起点」的年数加权：(5−最低分位)×(年数/10)+跌幅，再乘单位">年数加权</button>
       <span id="count1" style="font-size:12px;color:var(--dim);margin-left:auto;align-self:center"></span>
     </div>
     <div class="filters" id="retrySegs">
@@ -337,6 +338,10 @@
   <select id="addSel"></select>
   <input id="addCode" placeholder="或直接填代码：399673 / 886042 / sh000300" autocomplete="off">
   <div id="addHint" class="note" style="margin:4px 0 0;min-height:16px;color:var(--amber)"></div>
+  <div style="margin-top:8px">
+    <label style="font-size:12px;color:var(--dim)">百分位数据起点（10 年百分位最多 10 年，系数最大 1.0）</label>
+    <input id="addStart" placeholder="YYYY-MM-DD，如 2016-11-21" autocomplete="off" style="margin-top:4px">
+  </div>
   <p class="note" style="margin:6px 0 0">名称会在查询时自动补上（腾讯 → 东财），查不到就用代码；取不到行情的也能加，手填涨跌即可。</p>
   <div style="display:flex;gap:8px;margin-top:10px">
     <button class="primary" id="addOk1" style="flex:1">加到定投</button>
@@ -409,7 +414,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-20b";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-23a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1280,26 +1285,103 @@ function calcRow(it){
   r.isJC = it.formula==="jc20";
   return r;
 }
+/* ---------- 百分位数据起点（用于「按年数加权」的定投公式） ----------
+   来历：韭圈儿/数据表里的「百分位数据起点」。
+   起点是固定不变的（一年才过一年），变化的是「到交易日的年数」。
+   年数 = 四舍五入（交易日 − 起点）/ 365 天，最小 1 年，封顶 10 年
+   系数 = 年数 / 10   → 0.1 ~ 1.0
+   公式（开关打开时）：[(5 − 最低分位) × 系数 + 当日跌幅] × 单位
+   注：当日跌幅按「跌为正、涨为负」取号，即 −涨跌%。 */
+const START_DATE = {
+  "932365":"2024-12-11",  // 中证现金流
+  "930851":"2016-11-21",  // 云计算
+  "1B0852":"2016-11-21",  // 中证1000
+  "1B0680":"2025-01-20",  // 科创综指
+  "931152":"2019-04-22",  // CS创新药
+  "930901":"2016-11-21",  // 动漫游戏
+  "000813":"2016-11-21",  // 细分化工
+  "980138":"2025-01-02",  // 存储芯片
+  "399808":"2016-11-21",  // 中证新能
+  "931719":"2016-11-21",  // CS电池
+  "931247":"2016-11-21",  // 中证信创
+  "931079":"2019-04-25",  // 5G通信
+  "399976":"2016-11-21",  // CS新能源车
+  "931071":"2018-11-21",  // 人工智能
+  "399295":"2019-01-23",  // 创价值
+  "399673":"2016-11-21",  // 创业板50
+  "399006":"2016-11-21",  // 创业板指
+  "1B0690":"2022-11-04",  // 科创成长
+  "980092":"2023-01-03",  // CNIFCF
+  "H11136":"2024-01-02",  // 中国互联网
+  "1B0932":"2016-11-21",  // 中证消费
+  "399975":"2016-11-21",  // 证券公司
+  "930641":"2016-11-21",  // 中证中药
+  "399997":"2016-11-21",  // 中证白酒
+  "399296":"2019-01-23",  // 创成长
+  "000985":"2016-11-21",  // 中证全指
+  "931139":"2019-03-20",  // CS消费50
+  "931068":"2018-11-21",  // 消费龙头
+  "950090":"2024-01-02",  // 50AH优选
+  "000919":"2016-11-21",  // 300价值
+  "1B0905":"2016-11-21",  // 中证500
+  "930743":"2016-11-21",  // 中证生科
+  "399989":"2016-11-21",  // 中证医疗
+  "000922":"2016-11-21",  // 中证红利
+  "930713":"2016-11-21",  // CS人工智能
+};
+/* 这一行「百分位数据起点」：手填优先，其次内置表 */
+function startOf(it){
+  const v=(it.startDate||"").trim();
+  if(v) return v;
+  return START_DATE[String(it.code||"").trim().toUpperCase()] || START_DATE[it.code] || "";
+}
+/* 起点到今天的年数：四舍五入，最小 1、封顶 10 */
+function yearsOf(it, now){
+  const s=startOf(it);
+  if(!s) return null;
+  const t=Date.parse(s.replace(/[/.]/g,"-")+"T00:00:00");
+  if(!isFinite(t)) return null;
+  const ms=(now||Date.now())-t;
+  if(ms<=0) return 1;
+  const y=Math.round(ms/(365*86400*1000));
+  return Math.max(1, Math.min(10, y));
+}
+/* 系数 = 年数 / 10（0.1 ~ 1.0）；没有起点 → null（该行不参与加权，按原公式算） */
+function yearCoefOf(it, now){
+  const y=yearsOf(it, now);
+  return y===null ? null : y/10;
+}
+
+/* 定投行统一计算：
+   开关 state.yw（「按年数加权」）打开、且这一行有起点 → 
+      金额 = [(5 − 最低分位) × 系数 + (−涨跌%)] × 单位
+   其余情况 → 原来的 (5 − 最低分位) + (−涨跌%)，乘单位 */
 function calc1(it){
   const min=minPctOf(it), chg=chgOf(it);
   const o={min, chg, score:0, amount:0, tag:"off", text:""};
+  const yw = !!state.yw;
+  const coef = yw ? yearCoefOf(it) : null;
+  o.coef = coef;
+  o.years = yw ? yearsOf(it) : null;
   if(chg.pct===null){ o.tag="na"; o.text="无行情"; return o; }
   if(min===null){ o.text="未填分位"; return o; }
-  // 分数可以为负：跌得多为正，涨得多为负；金额如实显示，不截断、不保底
   const unit=()=>num(it.unit)??10;
+  // 计算「分数」：加权模式乘系数，否则系数按 1
+  const k = coef===null ? 1 : coef;
+  const score = (TRIGGER-min)*k + (-chg.pct);
+  o.score = score;
   if(min>=TRIGGER){
     if(min>=NEAR){ o.tag="off"; o.text="不投"; return o; }
-    // 5–10 这一段：照样算金额（黄色标记），但不算「触发」
     o.tag="near";
-    o.score=(TRIGGER-min)+(-chg.pct);
-    o.amount=Math.round(o.score*unit());
-    o.text = o.amount<0 ? "临近·负值" : (o.amount>0&&o.amount<10 ? "临近·不足10" : "临近");
+    o.amount=Math.round(score*unit());
+    o.text = (o.amount<0 ? "临近·负值" : (o.amount>0&&o.amount<10 ? "临近·不足10" : "临近"))
+           + (coef!==null ? ` ·×${coef}` : "");
     return o;
   }
-  o.score=(TRIGGER-min)+(-chg.pct);
-  o.amount=Math.round(o.score*unit());
+  o.amount=Math.round(score*unit());
   o.tag="hit";
-  o.text = o.amount<0 ? "负值" : (o.amount>0&&o.amount<10 ? "不足10" : "触发");
+  o.text = (o.amount<0 ? "负值" : (o.amount>0&&o.amount<10 ? "不足10" : "触发"))
+         + (coef!==null ? ` ·×${coef}` : "");
   return o;
 }
 function coefOf(dd){ return dd<20 ? 0 : 1 + 0.5*Math.floor((dd-20)/10); }
@@ -1886,10 +1968,11 @@ function renderSec1(){
       <div class="expand ${openPanels.has(it.id)?"show":""}" data-panel="${it.id}">
         <div><label>单位/元</label><input inputmode="decimal" data-k="unit" data-id="${it.id}" value="${it.unit??10}"></div>
         <div><label>手动涨跌%</label><input inputmode="decimal" data-k="mpct" data-id="${it.id}" value="${it.mpct??""}" placeholder="自动"></div>
+        <div><label>数据起点</label><input data-k="startDate" data-id="${it.id}" value="${it.startDate??""}" placeholder="${startOf(it)||"YYYY-MM-DD"}"></div>
         <div><label>状态</label><div style="font-size:12px;color:var(--dim);padding-top:8px">${
           jc ? `(20−分位)×系数 · ${r.text}${r.amount?` → ¥${r.amount}`:""} · 韭圈儿 ${jcD||"—"}`
              : `${r.text} · ${chg.date ? dateLabel(chg.date)+" "+(chg.src||"") : (chg.err || (chg.src? chg.src+"（实时）" : ""))}`
-        }${manualNote}</div></div>
+        }${r.coef!=null?` · 起点${startOf(it)} 满${r.years}年 ×${r.coef}`:""}${manualNote}</div></div>
         <div style="grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap">
           <button class="mini" data-top="${it.id}">⤒ 置顶</button>
           <button class="mini" data-up="${it.id}">↑ 上移</button>
@@ -2238,6 +2321,8 @@ document.addEventListener("input", e=>{
   }
   save();
   if(inp.classList.contains("chip")){ inp.className="chip "+chipClass(num(inp.value)); }
+  // 数据起点不影响行情，改完直接重画（不用重新拉行情）
+  if(inp.dataset.k==="startDate"){ renderSoon(); scheduleCloudPush(); return; }
   softRefresh();
   scheduleCloudPush();                      // 手填值自动上云（防抖 20 秒）
 });
@@ -2274,6 +2359,7 @@ function openAdd(){
   $("#addSel").innerHTML=`<option value="">— 从清单选择 —</option>`+
     all.map(x=>`<option value="${x.code}">${x.name}（${x.code}）</option>`).join("");
   $("#addCode").value="";
+  const as=$("#addStart"); if(as) as.value="";
   dlgAdd.showModal();
 }
 $("#add1").onclick=openAdd;
@@ -2285,6 +2371,9 @@ function addCodeChanged(){
   const code=$("#addCode").value.trim();
   const hint=$("#addHint");
   clearTimeout(nameTimer);
+  // 内置表里有起点就自动带出来，省得手打
+  const as=$("#addStart");
+  if(as) as.value = START_DATE[code.toUpperCase()] || START_DATE[code] || "";
   if(!code){ hint.textContent=""; return; }
   if(code.length<4){ hint.textContent=""; return; }
   hint.textContent="查询名称…";
@@ -2309,8 +2398,21 @@ async function doAdd(target){
     btn.textContent=old; btn.disabled=false;
   }
   if(!name) name=code;
+  // 百分位数据起点：新增时必填（10 年百分位最多 10 年，系数最大 1.0）
+  // 内置表里有就带出来，没有就让用户填。
+  let start = ($("#addStart").value||"").trim();
+  if(!start) start = START_DATE[code] || "";
+  if(!start){
+    start = (prompt(`「${name}」的百分位数据起点是哪天？（格式 YYYY-MM-DD）\n`+
+                    `10 年百分位最多 10 年，所以起点越早系数越大，最大 1.0`, "")||"").trim();
+  }
+  if(start && !/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/.test(start)){
+    alert("起点日期格式不对，应该是 YYYY-MM-DD（比如 2016-11-21）。这次先不填，之后在行的 ⚙ 里补。");
+    start="";
+  }
   const it={id:"x-"+Date.now(), name, code, min:"", unit:10, pe:"", pb:"", mpct:"", rev:0,
             addedAt: Date.now()};
+  if(start) it.startDate = start.replace(/[/.]/g,"-");
   bucket.push(it);
   if(bucket===state.list1){
     ensureOrder();
@@ -2748,6 +2850,16 @@ function renderSnapList(){
     </div>`;
   }).join("");
 }
+/* 「年数加权」开关：打开后按 百分位数据起点 → 年数/10 的系数计算 */
+function syncYWBtn(){
+  const b=$("#fYW"); if(!b) return;
+  b.classList.toggle("on", !!state.yw);
+  b.textContent = state.yw ? "年数加权·开" : "年数加权";
+}
+$("#fYW").onclick=()=>{
+  state.yw = !state.yw;
+  save(); syncYWBtn(); render();
+};
 $("#fSnap").onclick=()=>{
   ensureOrder();
   $("#snapName").value="";
@@ -3295,6 +3407,7 @@ if($("#verLine")){
 }
 if($("#cloudTokenInput")) $("#cloudTokenInput").value = cloudToken();
 updateFilters1();
+syncYWBtn();                                  // 「年数加权」开关的状态同步到按钮
 cloudSetStatus();
 restoreQuoteTime();
 render();
