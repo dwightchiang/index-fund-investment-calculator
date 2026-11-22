@@ -154,19 +154,25 @@ def record(force=False):
 
     rec = {
         "at": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "qiv_pct": qiv["pct"] if qiv else None,
+        # 原始值（各指标自己的口径）
+        "qiv_pct": qiv["pct"] if qiv else None,          # QIV = 含盘后的当日涨跌
         "qiv_date": qiv["date"] if qiv else "",
-        "qqq_post": round(qqq["pct"], 4) if qqq else None,
-        "fut": round(fut["pct"], 4) if fut else None,
+        "qqq_post": round(qqq["pct"], 4) if qqq else None,   # QQQ 盘后（已是纯盘后）
+        "fut_raw": round(fut["pct"], 4) if fut else None,    # 期货原始（含盘中）
+        # 基准
         "ndx_date": last["date"] if last else "",
         "ndx_pct": last["pct"] if last else None,
+        # ★ 统一口径：减掉 NDX 当日% → 都变成「纯盘后」，才能公平比较
         "qiv_post": None,
+        "fut_post": None,
         "next_date": "",
         "next_pct": None,
     }
-    # 纯盘后 = QIV% − NDX当日%
-    if rec["qiv_pct"] is not None and rec["ndx_pct"] is not None:
-        rec["qiv_post"] = round(rec["qiv_pct"] - rec["ndx_pct"], 4)
+    if rec["ndx_pct"] is not None:
+        if rec["qiv_pct"] is not None:
+            rec["qiv_post"] = round(rec["qiv_pct"] - rec["ndx_pct"], 4)
+        if rec["fut_raw"] is not None:
+            rec["fut_post"] = round(rec["fut_raw"] - rec["ndx_pct"], 4)
 
     # 如果这条 NDX 日线比上次记录的更新，说明上次的「次日」已经出来了 → 回填
     if last:
@@ -194,10 +200,10 @@ def record(force=False):
     db["updated"] = now.strftime("%Y-%m-%d %H:%M:%S")
     save(db)
 
-    print(f"  QIV        : {rec['qiv_pct']}%  (NDX当日 {rec['ndx_pct']}%)")
-    print(f"  QIV纯盘后  : {rec['qiv_post']}%")
-    print(f"  QQQ盘后    : {rec['qqq_post']}%")
-    print(f"  纳指期货   : {rec['fut']}%")
+    print(f"  NDX 当日   : {rec['ndx_pct']}%  ({rec['ndx_date']})")
+    print(f"  QIV 原始   : {rec['qiv_pct']}%   → 减NDX后 = {rec['qiv_post']}%")
+    print(f"  期货 原始  : {rec['fut_raw']}%   → 减NDX后 = {rec['fut_post']}%")
+    print(f"  QQQ 盘后   : {rec['qqq_post']}%  （本身就是纯盘后）")
     print(f"  共 {len(rows)} 条记录 → {OUT}")
     return 0
 
@@ -212,8 +218,9 @@ def report():
         print(f"（已记录 {n} 条，等次日数据回填）")
         return 0
 
-    keys = [("qiv_post", "QIV纯盘后"), ("qqq_post", "QQQ盘后"), ("fut", "纳指期货")]
+    keys = [("qiv_post", "QIV(减NDX)"), ("fut_post", "期货(减NDX)"), ("qqq_post", "QQQ盘后")]
     print(f"\n=== MAE 排名（样本 {len(rows)} 条）===")
+    print("三个指标都已统一为「纯盘后」口径：QIV/期货 各自减去 NDX 当日%")
     print("对比基准：次日 NDX 实际涨跌%\n")
     print(f"{'指标':<12}{'MAE':>8}{'平均误差(带符号)':>18}{'命中方向':>10}{'样本':>6}")
     print("-" * 60)

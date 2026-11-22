@@ -98,7 +98,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-23b 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-23c 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -415,7 +415,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-23b";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-23c";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1187,9 +1187,36 @@ function chgOf(it){
 
 /* ---------- 计算 ---------- */
 /* ---------- 盘后涨跌（纳斯达克100） ----------
-   QIV：纳斯达克官方「盘后指标」，QIV% − NDX当日% = 纯盘后涨跌。
-   官方站没有 CORS，浏览器只能经代理（/qiv）；代理不通时退回期货（新浪 hf_NQ，JSONP 可直连）。 */
+   ★ 统一口径：盘后涨跌 = 盘后指标% − NDX当日%
+   为什么必须减 NDX%：
+     · QIV  = 含盘后的当日涨跌
+     · 期货 = 从上次结算到现在的累计（含盘中）
+   两者都减掉 NDX 当日涨幅，才都是「纯盘后」，对比才有意义。
+
+   NDX 当日% 来自腾讯日K（Access-Control-Allow-Origin: *，浏览器可直连）。
+   QIV 官方站无 CORS，必须经代理（/qiv）；代理不通时退回期货（新浪 hf_NQ）。 */
 const AH_CACHE = "dca-afterhours-cache";
+/* 拉 NDX 最近两个交易日，算当日涨跌%（收盘比前收） */
+async function fetchNdxDailyPct(){
+  const u = "https://web.ifzq.gtimg.cn/appstock/app/usfqkline/get?"
+          + "_var=kline_dayqfq&param=usNDX,day,,,6,qfq&_=" + Date.now();
+  const r = await fetchWithTimeout(u, 10000);
+  if(!r.ok) throw new Error("ndx-"+r.status);
+  const txt = await r.text();
+  const i = txt.indexOf("{");
+  if(i < 0) throw new Error("ndx-parse");
+  const j = JSON.parse(txt.slice(i));
+  const days = ((j.data||{}).usNDX||{}).day || [];
+  if(days.length < 2) throw new Error("ndx-short");
+  const prevClose = parseFloat(days[days.length-2][2]);
+  const lastClose = parseFloat(days[days.length-1][2]);
+  if(!isFinite(prevClose) || !isFinite(lastClose) || !prevClose) throw new Error("ndx-bad");
+  return {
+    date: days[days.length-1][0],
+    prevClose, close: lastClose,
+    pct: Math.round((lastClose-prevClose)/prevClose*10000)/100,
+  };
+}
 async function loadAfterHours(force){
   if(!force){
     try{
@@ -1199,29 +1226,34 @@ async function loadAfterHours(force){
   }
   let changed=false;
 
-  // ① QIV（经代理）
-  if(proxyUsable() && (force || AH.qivPost===null || Date.now()-(AH.at||0) > 10*60*1000)){
+  // ⓪ NDX 当日涨跌 —— 两套指标都要减它，才能都变成「纯盘后」
+  let ndxPct = (AH.ndxPct===undefined ? null : AH.ndxPct);
+  try{
+    const d = await fetchNdxDailyPct();
+    ndxPct = d.pct;
+    AH.ndxDate = d.date; AH.ndxClose = d.close; AH.ndxPct = d.pct;
+    changed = true;
+  }catch(e){ /* 拿不到就沿用上次的 */ }
+
+  // ① QIV（经代理）→ 纯盘后 = QIV% − NDX%
+  if(proxyUsable()){
     try{
       const r=await fetchWithTimeout(proxyBase()+"/qiv", 15000);
       if(r.ok){
         const j=await r.json();
         if(j && j.pct!==null && j.pct!==undefined){
-          // NDX 当日涨跌从行情里取（11-20 收盘那条），没有就只记 QIV%
-          const it=state.list1.find(x=>x.code==="NDX");
-          const q=quotes["NDX"]||{};
-          const ndxPct = (q.pct!==null && q.pct!==undefined) ? +q.pct : null;
           AH.qiv = +j.pct;
-          AH.qivPost = ndxPct===null ? null : Math.round((j.pct - ndxPct)*100)/100;
+          AH.qivPost = (ndxPct===null||ndxPct===undefined) ? null
+                     : Math.round((j.pct - ndxPct)*100)/100;
           AH.qivDate = j.date || "";
-          AH.src = "QIV";
           changed=true;
         }
       }
     }catch(e){ /* 代理不通，走期货 */ }
   }
 
-  // ② 期货兜底（新浪 hf_NQ，JSONP）
-  if(force || AH.fut===null || changed){
+  // ② 期货（新浪 hf_NQ，JSONP）→ 同样减 NDX%，与 QIV 严格同口径
+  {
     try{
       const txt = await loadScriptText("https://hq.sinajs.cn/list=hf_NQ", 8000, "gbk");
       const m = /hq_str_hf_NQ="([^"]*)"/.exec(txt);
@@ -1229,7 +1261,11 @@ async function loadAfterHours(force){
         const p = m[1].split(",");
         const last = parseFloat(p[0]), prev = parseFloat(p[7]);
         if(isFinite(last) && isFinite(prev) && prev){
-          AH.fut = Math.round((last-prev)/prev*10000)/100;
+          const raw = Math.round((last-prev)/prev*10000)/100;
+          AH.futRaw = raw;
+          AH.fut = (ndxPct===null||ndxPct===undefined) ? null
+                 : Math.round((raw - ndxPct)*100)/100;
+          AH.futTime = p[6] || "";
           changed=true;
         }
       }
@@ -1361,15 +1397,22 @@ function jcCoef(pct){
   if(pct>=5)  return 10;
   return 20;
 }
-/* 盘后涨跌取哪个值：优先手填 → QIV 纯盘后 → 期货。
-   （QIV 纯盘后 = QIV% − NDX 当日%；期货含盘中，语义不同，仅作兜底） */
+/* 盘后涨跌取哪个值。
+   ★ AH.qivPost 和 AH.fut 都已经是「减掉 NDX 当日%」后的纯盘后值，可直接比较。
+   优先级：手填 → QIV纯盘后 → 期货纯盘后 */
 function afterHoursOf(it){
   const m=num(it.mpct3);                      // 手填盘后涨跌
   if(m!==null) return m;
-  const q=AH;                                  // {qivPost, fut}
-  if(q && q.qivPost!==null && q.qivPost!==undefined) return q.qivPost;
-  if(q && q.fut!==null && q.fut!==undefined) return q.fut;
+  if(AH.qivPost!==null && AH.qivPost!==undefined) return AH.qivPost;
+  if(AH.fut!==null && AH.fut!==undefined) return AH.fut;
   return null;
+}
+/* 当前用的是哪个源（手填 / QIV / 期货），用于在界面上说明 */
+function afterHoursSrc(it){
+  if(num(it.mpct3)!==null) return "手填";
+  if(AH.qivPost!==null && AH.qivPost!==undefined) return "QIV";
+  if(AH.fut!==null && AH.fut!==undefined) return "期货";
+  return "";
 }
 function calcJC(it){
   const pct=minPctOf(it);
@@ -2091,6 +2134,10 @@ function renderSec1(){
           jc ? `(20−分位)×系数${r.ah!==null?` − 盘后${r.ah>=0?"+":""}${r.ah.toFixed(2)}%×${AH_K}`:""}`
              + ` · ${r.text}` + (r.base!==undefined?` · 基础¥${r.base}`:"") + (r.ahAdj?` · 盘后调整${r.ahAdj>0?"+":""}${r.ahAdj}`:"")
              + ` → ¥${r.amount} · 韭圈儿 ${jcD||"—"}`
+             + (r.ah!==null?` · 来源${afterHoursSrc(it)}`:"")
+             + (AH.ndxPct!=null?` · NDX当日${AH.ndxPct>=0?"+":""}${AH.ndxPct}%`:"")
+             + (AH.qiv!=null?` · QIV原始${AH.qiv}%`:"")
+             + (AH.futRaw!=null?` · 期货原始${AH.futRaw}%`:"")
              : `${r.text} · ${chg.date ? dateLabel(chg.date)+" "+(chg.src||"") : (chg.err || (chg.src? chg.src+"（实时）" : ""))}`
         }${r.coef!=null?` · 起点${startOf(it)} 满${r.years}年 ×${r.coef}`:""}${manualNote}</div></div>
         <div style="grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap">
