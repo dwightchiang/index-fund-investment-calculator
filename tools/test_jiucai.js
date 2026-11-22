@@ -10,6 +10,7 @@ function slice(from, to) {
 
 const harness = `
 let JIUCAI = { items: {} };
+let AH = { qivPost: null, qiv: null, fut: null, at: 0, src: "" };
 let AUTO = { items: {} };
 let state = { last: {} };
 function num(v){ if(v===null||v===undefined||v==="") return null; const n=+v; return Number.isFinite(n)?n:null; }

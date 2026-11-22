@@ -1,0 +1,47 @@
+name: record-afterhours
+
+# 每天记录纳指100的盘后/隔夜指标（QIV、QQQ盘后、纳指期货）与次日实际涨跌，
+# 用于比较「哪个指标预测下一交易日涨跌的误差最小（MAE）」。
+#
+# 为什么要跑两次：
+#   第一次 08:30（北京时间）→ 记录「美股收盘后到现在」的指标值
+#   第二次 次日 08:00      → 顺带回填「昨天记录对应的次日实际涨跌」
+#   （脚本自己会判断：NDX 日线出现更新的一条时，回填上一条的 next_*）
+# 周一到周六跑（美股周日晚到周五晚交易）。
+
+on:
+  schedule:
+    - cron: "30 0 * * 2-6"     # 08:30 北京时间（周二~周六）
+    - cron: "0 0 * * 2-6"      # 08:00 北京时间，多一次兜底
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖
+        run: pip install requests
+
+      - name: 记录
+        run: python tools/record_afterhours.py
+
+      - name: 提交
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/afterhours.json
+          if git diff --staged --quiet; then
+            echo "::notice::data/afterhours.json 没有变化"
+            exit 0
+          fi
+          git commit -m "chore: 记录盘后指标 $(date -u +%Y-%m-%d)"
+          git push

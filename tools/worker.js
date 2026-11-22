@@ -300,11 +300,56 @@ export default {
     }
 
     if (path === "/ping") {
-      return new Response(JSON.stringify({ ok: true, v: "2026-11-14", quote: "/quote?code=399997",
+      return new Response(JSON.stringify({ ok: true, v: "2026-11-23", quote: "/quote?code=399997",
                                            batch: "/quotes?codes=399997,931139",
-                                           dbg: "/dbg?code=H11136" }), {
+                                           dbg: "/dbg?code=H11136",
+                                           qiv: "/qiv" }), {
         headers: { "Content-Type": "application/json; charset=utf-8", ...cors },
       });
+    }
+
+    /* ---------- QIV：纳斯达克100 盘后指标 ----------
+       官方站没有 CORS，浏览器直连拿不到，必须走这里。
+       页面 HTML 里直接带现成的值：
+         data-current-value="25,383.49"
+         data-numerical-change="-1,133.56"
+         id="pctChange" > -4.27%
+         DATA AS OF 11/20/2026
+       QIV 是「把盘后交易也算进去的纳指100」，所以：
+         QIV% = 当日涨跌（含盘后）
+         盘后涨跌 = QIV% − NDX 当日涨跌%
+       这里只返回 QIV 原始三值，NDX 当日涨跌由页面/脚本另取。 */
+    if (path === "/qiv") {
+      const t0 = Date.now();
+      try {
+        const r = await fetch("https://indexes.nasdaqomx.com/Index/Overview/QIV", {
+          headers: { "User-Agent": UA, "Accept": "text/html" },
+          cf: { cacheTtl: 60, cacheEverything: true },
+        });
+        if (!r.ok) throw new Error("qiv-http-" + r.status);
+        const html = await r.text();
+        const cur = html.match(/data-current-value="([\d,.]+)"/);
+        const chg = html.match(/data-numerical-change="(-?[\d,.]+)"/);
+        const pct = html.match(/id="pctChange"[\s\S]{0,200}?>\s*([-+]?[\d.]+)%/);
+        const dt = html.match(/DATA AS OF\s*([\d/]+)/);
+        if (!cur) throw new Error("qiv-parse");
+        const num = (s) => (s === undefined || s === null) ? null : Number(String(s).replace(/,/g, ""));
+        const out = {
+          qiv: num(cur[1]),
+          change: chg ? num(chg[1]) : null,
+          pct: pct ? Number(pct[1]) : null,
+          date: dt ? dt[1] : "",
+          ms: Date.now() - t0,
+        };
+        return new Response(JSON.stringify(out), {
+          headers: { "Content-Type": "application/json; charset=utf-8", ...cors },
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: String(e.message || e), ms: Date.now() - t0 }), {
+          status: 502,
+          headers: { "Content-Type": "application/json; charset=utf-8", ...cors },
+        });
+      }
     }
 
     // 逐个数据源单独试，看谁给了什么价（排查"两个客户端数据不一样"用）

@@ -98,7 +98,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-23a 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-23b 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -223,6 +223,7 @@
       <button id="fExpandAll" style="display:none">⤵ 展开全部</button>
       <button id="fSnap">存档</button>
       <button id="fYW" title="按「百分位数据起点」的年数加权：(5−最低分位)×(年数/10)+跌幅，再乘单位">年数加权</button>
+      <button id="fAH" title="纳指100：把盘后涨跌也算进金额 —— (20−分位)×系数 − 盘后涨跌%×10">盘后加减</button>
       <span id="count1" style="font-size:12px;color:var(--dim);margin-left:auto;align-self:center"></span>
     </div>
     <div class="filters" id="retrySegs">
@@ -414,7 +415,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-23a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-23b";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -474,6 +475,10 @@ const NO_QUOTE = new Set(["000958", "005012"]);
 /* ---------- 状态 ---------- */
 let AUTO = { updated:"", items:{} };
 let JIUCAI = { generated_at:"", items:{} };   // 韭圈儿十年分位（data/jiucai.json）
+/* 盘后涨跌（纳斯达克100）：QIV 纯盘后 / 期货。
+   QIV 官方站没有 CORS，必须经代理（Worker /api/qiv 或 serve.py）。
+   取不到就走期货（新浪 hf_NQ，浏览器端 JSONP 可直连）。 */
+let AH = { qivPost:null, qiv:null, fut:null, at:0, src:"" };
 let state = load();
 let quotes = {};
 let autoOn = true, onlyHit = false, onlyTodo = false, fillMode = false, prevAuto = true, prevSort = "order", monFilter = "all", tab = "s1";
@@ -559,6 +564,34 @@ function loadScript(url, ms=8000, charset){
     const t=setTimeout(()=>{done();reject(new Error("超时"));}, ms);
     function done(){ clearTimeout(t); s.onload=s.onerror=null; s.remove(); }
     s.onload=()=>{done();resolve();};
+    s.onerror=()=>{done();reject(new Error("加载失败"));};
+    document.head.appendChild(s);
+  });
+}
+/* 加载一个「给全局变量赋值」的脚本（如新浪 hq.sinajs.cn），返回那段文本。
+   新浪返回形如：var hq_str_hf_NQ="25500.5,...,纳斯达克指数期货,0";
+   没法直接拿到脚本文本，所以用一个内联 script 把全局变量读出来再拼回字符串。 */
+function loadScriptText(url, ms, charset, varName){
+  return new Promise((resolve,reject)=>{
+    const s=document.createElement("script");
+    s.src=url; s.async=true;
+    if(charset) s.charset=charset;
+    const t=setTimeout(()=>{done();reject(new Error("超时"));}, ms||8000);
+    function done(){ clearTimeout(t); s.onload=s.onerror=null; s.remove(); }
+    s.onload=()=>{
+      done();
+      try{
+        // 优先按变量名读；读不到就把 window 上所有 hq_str_* 拼起来
+        if(varName && typeof window[varName]==="string"){
+          resolve(varName+'="'+window[varName]+'"'); return;
+        }
+        const out=[];
+        Object.keys(window).forEach(k=>{
+          if(/^hq_str_/.test(k) && typeof window[k]==="string") out.push(k+'="'+window[k]+'"');
+        });
+        resolve(out.join("\n"));
+      }catch(e){ reject(e); }
+    };
     s.onerror=()=>{done();reject(new Error("加载失败"));};
     document.head.appendChild(s);
   });
@@ -757,7 +790,7 @@ function proxyBase(){
   let p=(state.proxy||"").trim().replace(/\s+/g,"");
   if(!p) return "";
   // 填成 .../quote、.../quotes、.../ping、.../dbg（自检地址）、或带尾斜杠，都能自动认出来
-  p=p.replace(/\/(quote|quotes|ping|dbg)\/?$/i,"");
+  p=p.replace(/\/(quote|quotes|ping|dbg|qiv)\/?$/i,"");
   p=p.replace(/\/+$/,"");
   if(p && !/^https?:\/\//i.test(p)) p="https://"+p;   // 少了协议也能用
   return p;
@@ -1153,6 +1186,61 @@ function chgOf(it){
 }
 
 /* ---------- 计算 ---------- */
+/* ---------- 盘后涨跌（纳斯达克100） ----------
+   QIV：纳斯达克官方「盘后指标」，QIV% − NDX当日% = 纯盘后涨跌。
+   官方站没有 CORS，浏览器只能经代理（/qiv）；代理不通时退回期货（新浪 hf_NQ，JSONP 可直连）。 */
+const AH_CACHE = "dca-afterhours-cache";
+async function loadAfterHours(force){
+  if(!force){
+    try{
+      const c=JSON.parse(localStorage.getItem(AH_CACHE)||"null");
+      if(c && c.at && Date.now()-c.at < 10*60*1000 && c.qivPost!==undefined){ AH=c; }
+    }catch(e){}
+  }
+  let changed=false;
+
+  // ① QIV（经代理）
+  if(proxyUsable() && (force || AH.qivPost===null || Date.now()-(AH.at||0) > 10*60*1000)){
+    try{
+      const r=await fetchWithTimeout(proxyBase()+"/qiv", 15000);
+      if(r.ok){
+        const j=await r.json();
+        if(j && j.pct!==null && j.pct!==undefined){
+          // NDX 当日涨跌从行情里取（11-20 收盘那条），没有就只记 QIV%
+          const it=state.list1.find(x=>x.code==="NDX");
+          const q=quotes["NDX"]||{};
+          const ndxPct = (q.pct!==null && q.pct!==undefined) ? +q.pct : null;
+          AH.qiv = +j.pct;
+          AH.qivPost = ndxPct===null ? null : Math.round((j.pct - ndxPct)*100)/100;
+          AH.qivDate = j.date || "";
+          AH.src = "QIV";
+          changed=true;
+        }
+      }
+    }catch(e){ /* 代理不通，走期货 */ }
+  }
+
+  // ② 期货兜底（新浪 hf_NQ，JSONP）
+  if(force || AH.fut===null || changed){
+    try{
+      const txt = await loadScriptText("https://hq.sinajs.cn/list=hf_NQ", 8000, "gbk");
+      const m = /hq_str_hf_NQ="([^"]*)"/.exec(txt);
+      if(m){
+        const p = m[1].split(",");
+        const last = parseFloat(p[0]), prev = parseFloat(p[7]);
+        if(isFinite(last) && isFinite(prev) && prev){
+          AH.fut = Math.round((last-prev)/prev*10000)/100;
+          changed=true;
+        }
+      }
+    }catch(e){}
+  }
+
+  if(changed){ AH.at = Date.now(); }
+  try{ localStorage.setItem(AH_CACHE, JSON.stringify(AH)); }catch(e){}
+  return changed;
+}
+
 /* ---------- 韭圈儿十年分位（data/jiucai.json） ----------
    与蛋卷的区别：韭圈儿覆盖美股/港股指数（NDX.GI 纳斯达克100 等），每天 10:00 后更新。
    优先读仓库里的 data/jiucai.json（Action 每天写）；如果发现数据过期，
@@ -1258,7 +1346,14 @@ async function loadJiucai(force){
 }
 /* 韭圈儿专用公式：分位越高越不投，越低系数越大
    ≥20 → 0（不投）；10–20 → 5；5–10 → 10；<5 → 20
-   金额 = (20 − 分位) × 系数   （直接按元） */
+   基础金额 = (20 − 分位) × 系数   （直接按元）
+
+   开关 state.ahOn（「盘后加减」）打开、且盘后涨跌可用时：
+      金额 = (20 − 分位) × 系数 − 涨跌% × 10
+   即「跌了多投、涨了少投」，与主公式方向一致：
+     盘后跌 1.5%  → +15 元
+     盘后涨 1.5%  → −15 元（负值如实显示） */
+const AH_K = 10;            // 盘后涨跌 1% 折算多少钱
 function jcCoef(pct){
   if(pct===null||pct===undefined) return 0;
   if(pct>=20) return 0;
@@ -1266,15 +1361,33 @@ function jcCoef(pct){
   if(pct>=5)  return 10;
   return 20;
 }
+/* 盘后涨跌取哪个值：优先手填 → QIV 纯盘后 → 期货。
+   （QIV 纯盘后 = QIV% − NDX 当日%；期货含盘中，语义不同，仅作兜底） */
+function afterHoursOf(it){
+  const m=num(it.mpct3);                      // 手填盘后涨跌
+  if(m!==null) return m;
+  const q=AH;                                  // {qivPost, fut}
+  if(q && q.qivPost!==null && q.qivPost!==undefined) return q.qivPost;
+  if(q && q.fut!==null && q.fut!==undefined) return q.fut;
+  return null;
+}
 function calcJC(it){
   const pct=minPctOf(it);
-  const o={pct, coef:0, amount:0, tag:"off", text:""};
+  const o={pct, coef:0, amount:0, tag:"off", text:"", ah:null, ahAdj:0};
   if(pct===null){ o.text="未填分位"; return o; }
   o.coef=jcCoef(pct);
   if(!o.coef){ o.text="分位≥20 不投"; return o; }
-  o.amount=Math.round((20-pct)*o.coef*100)/100;
-  o.tag="hit";
-  o.text=`系数${o.coef}`;
+  const base=Math.round((20-pct)*o.coef*100)/100;
+  // 盘后涨跌（只对纳指100 这类 jc 行生效）
+  const ah = afterHoursOf(it);
+  if(state.ahOn && ah!==null){
+    o.ah = ah;
+    o.ahAdj = Math.round(-ah*AH_K*100)/100;   // 跌为正、涨为负
+  }
+  o.base = base;
+  o.amount = Math.round((base + o.ahAdj)*100)/100;
+  o.tag = o.amount>0 ? "hit" : (o.amount<0 ? "hit" : "off");
+  o.text = `系数${o.coef}` + (o.ah!==null ? ` · 盘后${o.ah>=0?"+":""}${o.ah.toFixed(2)}%` : "");
   return o;
 }
 /* 统一入口：这一行用哪套公式。
@@ -1411,10 +1524,11 @@ function calc2(it){
 function chipClass(v){ return v===null?"empty":v<TRIGGER?"hit":v<NEAR?"near":"off"; }
 /* 金额显示：负数原样显示，未填分位/无行情显示 — */
 function amtView(r){
-  if(r.isJC){                                   // 韭圈儿公式：(20−分位)×系数
+  if(r.isJC){                    // 韭圈儿公式：(20−分位)×系数 [− 盘后涨跌%×10]
     if(r.pct===null) return { txt:"待填分位", cls:"zero" };
     if(!r.coef)      return { txt:"分位≥20 不投", cls:"zero" };
     if(r.amount===0) return { txt:"¥0", cls:"zero" };
+    if(r.amount<0)   return { txt:"-¥"+Math.abs(r.amount), cls:"neg" };   // 涨太多 → 负值如实显示
     return { txt:"¥"+r.amount, cls:"" };
   }
   if(r.tag==="na"){
@@ -1929,9 +2043,12 @@ function renderSec1(){
     const pctTxt = chg.pct===null?"—":(chg.pct>=0?"+":"")+chg.pct.toFixed(2)+"%";
     const cls = chg.pct>0?"up":chg.pct<0?"dn":"flat";
     const q = hasQuote(it);
-    // 韭圈儿行：涨跌那格显示「系数」，更直观
+    // 韭圈儿行：涨跌那格显示「盘后涨跌」（跌绿涨红，和主列表同色系），没有则显示系数
+    const ahv = jc ? afterHoursOf(it) : null;
     const chgCell = jc
-      ? `<div class="cell" style="text-align:center;font-size:12px;color:var(--dim)">系数<br><b style="color:${r.coef?"var(--fg)":"var(--gray)"}">${r.coef||"0"}</b></div>`
+      ? (ahv!==null
+          ? `<div class="cell" style="text-align:center;font-size:12px;color:var(--dim)">盘后<br><b style="color:${ahv>0?'var(--red)':ahv<0?'var(--green)':'var(--gray)'}">${ahv>=0?"+":""}${ahv.toFixed(2)}%</b></div>`
+          : `<div class="cell" style="text-align:center;font-size:12px;color:var(--dim)">系数<br><b style="color:${r.coef?"var(--fg)":"var(--gray)"}">${r.coef||"0"}</b></div>`)
       : (q ? `<div class="chg ${cls}">${pctTxt}</div>`
            : `<input inputmode="decimal" data-k="mpct" data-id="${it.id}" value="${it.mpct??""}" placeholder="涨跌%">`);
     const fmtAt=v=>{ if(!v) return ""; const d=new Date(typeof v==="number"?v:String(v).slice(0,10)+"T12:00:00"); return `${d.getMonth()+1}-${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; };
@@ -1969,8 +2086,11 @@ function renderSec1(){
         <div><label>单位/元</label><input inputmode="decimal" data-k="unit" data-id="${it.id}" value="${it.unit??10}"></div>
         <div><label>手动涨跌%</label><input inputmode="decimal" data-k="mpct" data-id="${it.id}" value="${it.mpct??""}" placeholder="自动"></div>
         <div><label>数据起点</label><input data-k="startDate" data-id="${it.id}" value="${it.startDate??""}" placeholder="${startOf(it)||"YYYY-MM-DD"}"></div>
+        ${jc?`<div><label>盘后涨跌%（手填，留空=自动）</label><input inputmode="decimal" data-k="mpct3" data-id="${it.id}" value="${it.mpct3??""}" placeholder="${AH.qivPost!==null?"QIV "+AH.qivPost.toFixed(2)+"%":(AH.fut!==null?"期货 "+AH.fut.toFixed(2)+"%":"自动")}"></div>`:""}
         <div><label>状态</label><div style="font-size:12px;color:var(--dim);padding-top:8px">${
-          jc ? `(20−分位)×系数 · ${r.text}${r.amount?` → ¥${r.amount}`:""} · 韭圈儿 ${jcD||"—"}`
+          jc ? `(20−分位)×系数${r.ah!==null?` − 盘后${r.ah>=0?"+":""}${r.ah.toFixed(2)}%×${AH_K}`:""}`
+             + ` · ${r.text}` + (r.base!==undefined?` · 基础¥${r.base}`:"") + (r.ahAdj?` · 盘后调整${r.ahAdj>0?"+":""}${r.ahAdj}`:"")
+             + ` → ¥${r.amount} · 韭圈儿 ${jcD||"—"}`
              : `${r.text} · ${chg.date ? dateLabel(chg.date)+" "+(chg.src||"") : (chg.err || (chg.src? chg.src+"（实时）" : ""))}`
         }${r.coef!=null?` · 起点${startOf(it)} 满${r.years}年 ×${r.coef}`:""}${manualNote}</div></div>
         <div style="grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap">
@@ -2860,6 +2980,24 @@ $("#fYW").onclick=()=>{
   state.yw = !state.yw;
   save(); syncYWBtn(); render();
 };
+/* 「盘后加减」开关：纳指100 金额里加入盘后涨跌项 */
+function syncAHBtn(){
+  const b=$("#fAH"); if(!b) return;
+  b.classList.toggle("on", !!state.ahOn);
+  b.textContent = state.ahOn ? "盘后加减·开" : "盘后加减";
+}
+$("#fAH").onclick=async ()=>{
+  state.ahOn = !state.ahOn;
+  save(); syncAHBtn();
+  if(state.ahOn){
+    // 打开时立刻拉一次盘后数据
+    await loadAfterHours(true);
+    if(AH.qivPost===null && AH.fut===null){
+      alert("拿不到盘后数据：\n· QIV 需要代理（设置里填 Worker 地址）\n· 期货直连也可能被拦\n\n可以在纳指100 的 ⚙ 里手填「盘后涨跌」。");
+    }
+  }
+  render();
+};
 $("#fSnap").onclick=()=>{
   ensureOrder();
   $("#snapName").value="";
@@ -3408,11 +3546,14 @@ if($("#verLine")){
 if($("#cloudTokenInput")) $("#cloudTokenInput").value = cloudToken();
 updateFilters1();
 syncYWBtn();                                  // 「年数加权」开关的状态同步到按钮
+syncAHBtn();                                  // 「盘后加减」开关
 cloudSetStatus();
 restoreQuoteTime();
 render();
 loadPercentiles().then(()=>render());
 loadJiucai().then(ok=>{ if(ok) render(); });   // 韭圈儿十年分位（纳斯达克100 等）
+// 盘后涨跌（QIV 纯盘后 / 期货）：只对纳指100 有用，但开关打开或默认都拉一次
+loadAfterHours().then(ok=>{ if(ok) render(); });
 checkHashSync();
 backfillNames();
 cloudPull();                                 // 开机先看云端有没有新的手填值

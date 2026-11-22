@@ -323,8 +323,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             return
         if self.path.startswith("/api/ping"):
-            self._json({"ok": True, "v": "2026-11-02a", "quote": "/api/quote?code=399997",
-                        "batch": "/api/quotes?codes=399997,931139"})
+            self._json({"ok": True, "v": "2026-11-23a", "quote": "/api/quote?code=399997",
+                        "batch": "/api/quotes?codes=399997,931139", "qiv": "/api/qiv"})
+            return
+        if self.path.startswith("/api/qiv"):
+            self._api_qiv()
             return
         if self.path.startswith("/api/quotes"):
             self._api_quotes()
@@ -333,6 +336,46 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._api_quote()
             return
         super().do_GET()
+
+    def _api_qiv(self):
+        """QIV = 纳斯达克100 盘后指标。官方站无 CORS，浏览器只能走这里。
+
+        页面 HTML 里直接带值：
+            data-current-value="25,383.49"
+            data-numerical-change="-1,133.56"
+            id="pctChange" > -4.27%
+            DATA AS OF 11/20/2026
+        """
+        t0 = time.time()
+        try:
+            url = "https://indexes.nasdaqomx.com/Index/Overview/QIV"
+            r = requests.get(url, headers={**UA, "Accept": "text/html"},
+                             timeout=20, verify=False)
+            html = r.text
+
+            def grab(pat):
+                m = re.search(pat, html)
+                return m.group(1) if m else None
+
+            cur = grab(r'data-current-value="([\d,.]+)"')
+            chg = grab(r'data-numerical-change="(-?[\d,.]+)"')
+            pct = grab(r'id="pctChange"[\s\S]{0,200}?>\s*([-+]?[\d.]+)%')
+            dt = grab(r"DATA AS OF\s*([\d/]+)")
+            if not cur:
+                raise RuntimeError("qiv-parse")
+
+            def num(s):
+                return None if s is None else float(str(s).replace(",", ""))
+
+            self._json({
+                "qiv": num(cur),
+                "change": num(chg),
+                "pct": float(pct) if pct is not None else None,
+                "date": dt or "",
+                "ms": int((time.time() - t0) * 1000),
+            })
+        except Exception as e:
+            self._json({"error": str(e), "ms": int((time.time() - t0) * 1000)})
 
     def _api_quotes(self):
         q = parse_qs(urlparse(self.path).query)
