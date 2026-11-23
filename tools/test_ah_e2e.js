@@ -89,21 +89,26 @@ setTimeout(async () => {
     check("⑤ 期货最新 26906.375", parseFloat(p2[0]), 26906.375);
     check("⑥ 期货昨结 25126.5", parseFloat(p2[7]), 25126.5);
 
-    // 3) loadAfterHours 在只有期货可用时，fut/futPost 应该有值
+    // 3) loadAfterHours 在只有期货可用时
     const r = await vm.runInContext(`
       (async function(){
         AH = { qivPost:null, qiv:null, qqqPost:null, fut:null, futRaw:null, at:0, src:"" };
-        // 让 NDX 日线取不到（简化），只测期货解析
-        fetchNdxDailyPct = async () => { throw new Error("skip"); };
+        fetchNdxDailyPct = async () => ({ date:"2026-11-20", pct:-5.61, close:25028.98, prevClose:26517.05 });
         proxyUsable = () => false;
+        localStorage.removeItem("dca-afterhours-cache");
         await loadAfterHours(true);
-        return { fut:AH.fut, futRaw:AH.futRaw, futPost:AH.futPost, qqqPost:AH.qqqPost };
+        return { fut:AH.fut, futRaw:AH.futRaw, futPost:AH.futPost,
+                 qqqPost:AH.qqqPost, futSameDay:AH.futSameDay, futBaseMissing:AH.futBaseMissing };
       })()
     `, sandbox);
     console.log("   loadAfterHours 结果:", JSON.stringify(r));
     check("⑦ 期货原始涨跌算出来了", r.futRaw !== null && isFinite(r.futRaw), true);
-    check("⑧ 15:00 基准也参与了（fut 有值或为 null 都可）",
-          r.fut === null || isFinite(r.fut), true);
+    // 期货昨结是 11-23、NDX 是 11-20 → 不同交易日 → futPost 必须为 null（不能瞎减）
+    check("⑧ 期货与 NDX 不同交易日 → futPost 为 null", r.futPost, null);
+    check("⑨ 且标记了 futSameDay=false", r.futSameDay, false);
+    // 15:00 基准：现在是 23:25，早已过 15:00 → 不该伪造基准（否则落地是 0%）
+    check("⑩ 远离 15:00 → 不伪造基准，fut 为 null", r.fut, null);
+    check("⑪ 并标记 futBaseMissing", r.futBaseMissing, true);
 
     console.log(bad ? `\n${bad} 项不符合预期` : "\n全部通过");
     process.exit(bad ? 1 : 0);

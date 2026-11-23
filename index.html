@@ -98,7 +98,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-23g 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-23i 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -416,7 +416,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-23g";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-23i";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -569,11 +569,12 @@ function loadScript(url, ms=8000, charset){
     document.head.appendChild(s);
   });
 }
-/* 加载一个「给全局变量赋值」的脚本，返回那段文本。
+/* 加载一个「给全局变量赋值」的脚本，返回**这一个**变量的赋值文本。
    两类来源：
      · 新浪 hq.sinajs.cn → var hq_str_hf_NQ="..."
-     · 腾讯 qt.gtimg.cn  → v_usQQQ="..."（变量名是 v_<code>）
-   没法直接拿到脚本文本，所以加载后把全局变量读出来再拼成 "name=\"...\"" 的形式。 */
+     · 腾讯 qt.gtimg.cn  → v_usQQQ="..."
+   ★ 关键：拿到后要把这个全局变量删掉，否则下次收集时会带上上一次的旧值，
+     导致 exec 匹配到别的品种（之前期货就匹配成了 QQQ 的数据）。 */
 function loadScriptText(url, ms, charset, varName){
   return new Promise((resolve,reject)=>{
     const s=document.createElement("script");
@@ -584,18 +585,28 @@ function loadScriptText(url, ms, charset, varName){
     s.onload=()=>{
       done();
       try{
-        if(varName && typeof window[varName]==="string"){
-          resolve(varName+'="'+window[varName]+'"'); return;
+        // 明确指定变量名：直接读它，读完删掉
+        if(varName){
+          const v = window[varName];
+          if(typeof v !== "string"){ reject(new Error("没有变量 "+varName)); return; }
+          try{ delete window[varName]; }catch(e){ window[varName]=undefined; }
+          resolve(varName+'="'+v+'"');
+          return;
         }
-        // 把 hq_str_*（新浪）和 v_*（腾讯）都收集起来
-        const out=[];
-        Object.keys(window).forEach(k=>{
-          if(!/^(hq_str_|v_)/.test(k)) return;
-          if(typeof window[k]==="string" && window[k].indexOf("~")>=0 || /^hq_str_/.test(k))
-            out.push(k+'="'+window[k]+'"');
-        });
-        if(!out.length){ reject(new Error("脚本没产出变量")); return; }
-        resolve(out.join("\n"));
+        // 没指定：按 URL 猜（qt.gtimg → v_<code>；hq.sinajs → hq_str_<code>）
+        const u = String(url);
+        let guess = "";
+        let mm = /q=([A-Za-z0-9\.\-_]+)/.exec(u);
+        if(u.includes("gtimg") && mm) guess = "v_" + mm[1];
+        mm = /list=([A-Za-z0-9\.\-_]+)/.exec(u);
+        if(u.includes("sinajs") && mm) guess = "hq_str_" + mm[1];
+        if(guess && typeof window[guess]==="string"){
+          const v = window[guess];
+          try{ delete window[guess]; }catch(e){ window[guess]=undefined; }
+          resolve(guess+'="'+v+'"');
+          return;
+        }
+        reject(new Error("没有产出变量（想要的: "+(guess||"?")+"）"));
       }catch(e){ reject(e); }
     };
     s.onerror=()=>{done();reject(new Error("加载失败"));};
@@ -1396,23 +1407,37 @@ async function loadAfterHours(force){
           AH.futTime = p[6] || "";
           // 基准：北京时间 15:00 的点位（15:00 前买入按当日净值，所以以它为参照）
           let base = getFutBase();
-          if(!base && afterFutBaseTime()){
-            // 15:00 后第一次打开、当天还没基准 → 用当前价补一个（会显示"基准取自 HH:MM"）
-            base = setFutBase(last);
-            AH.futBaseLate = true;
-          } else if(base){
+          if(base){
             AH.futBaseLate = false;
+          }else{
+            // 当天还没有基准：
+            //  · 15:00 前后 15 分钟内 → 就用当前价当基准（正好在时点附近，合理）
+            //  · 已经晚了很多（比如晚上 23:00 才第一次打开）→ 不伪造基准，
+            //    否则「15:00至今」落地就是 0%，毫无意义
+            const {hm} = bjYmdHm();
+            const near1500 = hm >= FUT_BASE_HHMM && hm <= FUT_BASE_HHMM+15;
+            if(near1500){
+              base = setFutBase(last);
+              AH.futBaseLate = true;
+            }else{
+              AH.futBaseLate = false;
+              AH.futBaseMissing = true;
+            }
           }
           AH.futBase = base ? base.price : null;
           AH.futBaseDate = base ? base.date : "";
           AH.futBaseAt = base ? base.at : 0;
-          // 15:00 基准 → 现在的涨跌%
+          // 15:00 基准 → 现在的涨跌%（没有基准就为 null，不显示假的 0%）
           AH.fut = (base && base.price) ? Math.round((last - base.price)/base.price*10000)/100 : null;
           // 原来的「对昨结」涨跌（保留：用于跟 NDX% 相减做纯盘后对比）
           AH.futRaw = Math.round((last-prev)/prev*10000)/100;
           // 纯盘后口径（与 QIV 可比）：期货昨结% − NDX当日%
-          AH.futPost = (ndxPct===null||ndxPct===undefined) ? null
-                     : Math.round((AH.futRaw - ndxPct)*100)/100;
+          // ★ 日期校验：期货「昨结」每天切换，可能与 NDX 日线不是同一交易日。
+          //   同一天的期货涨跌和 NDX 当日涨跌量级应该接近；
+          //   差太多（>5 个点）说明基准不同日，不能相减。
+          const diff = Math.abs(AH.futRaw - (ndxPct===null||ndxPct===undefined ? AH.futRaw : ndxPct));
+          AH.futSameDay = (ndxPct!==null && ndxPct!==undefined && diff <= 5);
+          AH.futPost = AH.futSameDay ? Math.round((AH.futRaw - ndxPct)*100)/100 : null;
           changed=true;
         }
       }
@@ -1549,17 +1574,23 @@ function jcCoef(pct){
 /* 为什么没有盘后数据 —— 给状态行一句人话解释 */
 function afterHoursWhyNo(){
   const why=[];
-  if(!proxyUsable()) why.push("QIV 需要代理（设置里填 Worker 地址）");
+  if(!proxyUsable() && (AH.qivPost===null||AH.qivPost===undefined))
+    why.push("QIV 需要代理（设置里填 Worker 地址）");
   if(AH.qivSameDay===false)
-    why.push(`QIV 日期 ${AH.qivDateNorm||"?"} 与 NDX ${AH.ndxDate||"?"} 不一致`);
-  if(AH.qqqAfter===0||AH.qqqAfter===null)
-    why.push("QQQ 盘后价为 0（美股盘中时段没有盘后交易，收盘后才有）");
+    why.push(`QIV 日期 ${AH.qivDateNorm||"?"} ≠ NDX ${AH.ndxDate||"?"}`);
+  if(AH.qqqAfter===0||AH.qqqAfter===null||AH.qqqAfter===undefined)
+    why.push("QQQ 盘后价为 0（美股盘中没有盘后交易）");
+  if(AH.futRaw!==null && AH.futRaw!==undefined && AH.futSameDay===false)
+    why.push(`期货昨结(${AH.futRaw}%)与 NDX(${AH.ndxPct}%)不同交易日，已弃用`);
   if(AH.futRaw===null||AH.futRaw===undefined)
     why.push("期货没取到（新浪接口可能被拦）");
   return why.length ? `（${why.join("；")}）` : "";
 }
 /* 可选的三路盘后涨跌（下拉菜单用）。
-   注意：QIV / QQQ / 期货 三个值都已经统一成「纯盘后」口径（减掉 NDX 当日% 或本身即纯盘后）。 */
+   QIV / QQQ / 期货 三个值都统一成「纯盘后」口径：
+     QIV  = QIV% − NDX%
+     QQQ  = 本身就是盘后成交
+     期货 = 期货昨结% − NDX%（且要求与 NDX 同一交易日） */
 function afterHoursOptions(it){
   const out=[];
   out.push({ key:"auto", label:"自动（优先 QIV）", val:afterHoursAuto(it) });
@@ -1569,14 +1600,18 @@ function afterHoursOptions(it){
     out.push({ key:"qqq", label:`QQQ ${AH.qqqPost>=0?"+":""}${AH.qqqPost.toFixed(2)}%`, val:AH.qqqPost });
   if(AH.futPost!==null && AH.futPost!==undefined)
     out.push({ key:"fut", label:`期货 ${AH.futPost>=0?"+":""}${AH.futPost.toFixed(2)}%`, val:AH.futPost });
+  // 15:00 基准 → 现在的涨跌（这是「今天下午3点到现在」的变化，与前面三个口径不同）
+  if(AH.fut!==null && AH.fut!==undefined)
+    out.push({ key:"fut15", label:`期货15:00至今 ${AH.fut>=0?"+":""}${AH.fut.toFixed(2)}%`, val:AH.fut });
   out.push({ key:"manual", label:"手填…", val:num(it.mpct3) });
   return out;
 }
-/* 「自动」的取值顺序：QIV → QQQ → 期货 */
+/* 「自动」的取值顺序：QIV → QQQ → 期货纯盘后 → 期货15:00 基准 */
 function afterHoursAuto(it){
   if(AH.qivPost!==null && AH.qivPost!==undefined) return AH.qivPost;
   if(AH.qqqPost!==null && AH.qqqPost!==undefined) return AH.qqqPost;
   if(AH.futPost!==null && AH.futPost!==undefined) return AH.futPost;
+  if(AH.fut!==null && AH.fut!==undefined) return AH.fut;
   return null;
 }
 /* 盘后涨跌取哪个值：按 it.ahPick（下拉选择）决定，默认 auto */
@@ -1586,6 +1621,7 @@ function afterHoursOf(it){
   if(pick==="qiv")  return (AH.qivPost ?? null);
   if(pick==="qqq")  return (AH.qqqPost ?? null);
   if(pick==="fut")  return (AH.futPost ?? null);
+  if(pick==="fut15") return (AH.fut ?? null);
   return afterHoursAuto(it);
 }
 /* 当前用的是哪个源（手填 / QIV / QQQ / 期货），用于在界面上说明 */
@@ -1595,10 +1631,12 @@ function afterHoursSrc(it){
   if(pick==="qiv")    return "QIV";
   if(pick==="qqq")    return "QQQ";
   if(pick==="fut")    return "期货";
+  if(pick==="fut15")  return "期货15:00";
   // auto
   if(AH.qivPost!==null && AH.qivPost!==undefined) return "QIV";
   if(AH.qqqPost!==null && AH.qqqPost!==undefined) return "QQQ";
   if(AH.futPost!==null && AH.futPost!==undefined) return "期货";
+  if(AH.fut!==null && AH.fut!==undefined) return "期货15:00";
   return "";
 }
 function calcJC(it){
