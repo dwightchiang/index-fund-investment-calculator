@@ -98,7 +98,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-23d 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-23f 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -209,6 +209,7 @@
       <button id="btnCopy" title="把今天的金额清单复制成文字，可直接粘贴到微信/备忘录">复制</button>
     </div>
     <div class="ptime2" id="t1time">行情 —</div>
+    <div class="ptime2" id="jcTime" style="color:var(--dim)"></div>
     <div class="filters" id="filters1">
       <span style="font-size:12px;color:var(--dim);align-self:center">排序</span>
       <select id="sortSel" style="width:auto;padding:4px 8px;font-size:12px;border-radius:999px">
@@ -415,7 +416,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-23d";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-23f";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -803,7 +804,23 @@ function withCode(base, code){
 /* 「这个价是不是过期的」——代理被边缘缓存时会一直返回同一个价，
    交易时段内超过 3 分钟没动就判定过期，直接改用浏览器直连。 */
 const STALE_MS = 180*1000;
-function qTs(ts){ const n=+ts||0; return n>1e11 ? n : n*1000; }   // 秒/毫秒都吃
+/* 把各种时间戳统一成毫秒。
+   ★ 坑：如果传进来的是 **8 位日期**（如 "20261123" 或 20261123），
+     旧代码会把它当「秒」再乘 1000 → 1970 年，算出 "-498735时前" 这种鬼值。
+   现在先认出 8 位日期（YYYYMMDD）转成当天 0 点，再处理秒/毫秒。 */
+function qTs(ts){
+  if(ts===null || ts===undefined || ts==="") return 0;
+  // 8 位日期串（YYYYMMDD）
+  const s=String(ts).trim();
+  if(/^\d{8}$/.test(s)){
+    const y=+s.slice(0,4), m=+s.slice(4,6), d=+s.slice(6,8);
+    if(y>=1990 && y<=2100 && m>=1 && m<=12 && d>=1 && d<=31)
+      return new Date(y, m-1, d).getTime();
+  }
+  const n=+ts || 0;
+  if(!n) return 0;
+  return n > 1e11 ? n : n*1000;      // >1e11 当毫秒，否则当秒
+}
 function ageSecs(ts, nowSec){
   const t=qTs(ts); if(!t) return 0;
   const now = nowSec ? nowSec*1000 : Date.now();
@@ -1077,6 +1094,24 @@ function pctDay(){
   return k ? ((AUTO.items[k]||{}).date || AUTO.updated || "") : "";
 }
 function markPctTime(){ setTimeLabels(); }
+/* 顶部显示「韭圈儿分位拿到了哪一天」——让"是否已获取到前一交易日的分位"一眼可见 */
+function markJcTime(){
+  const el=$("#jcTime"); if(!el) return;
+  const rows=JC_ROWS.map(r=>{
+    const d=jiucaiDate({ code:r.code, jc:r.jc });
+    return d ? `${r.name} ${d}` : `${r.name} —`;
+  });
+  const okAll=JC_ROWS.every(r=>{ const d=jiucaiDate({code:r.code,jc:r.jc}); return d && isJcFresh({code:r.code,jc:r.jc}); });
+  const pulled = state.jcPulledAt ? new Date(state.jcPulledAt) : null;
+  const pulledTxt = pulled
+    ? `　·　本次刷新 ${String(pulled.getHours()).padStart(2,"0")}:${String(pulled.getMinutes()).padStart(2,"0")}`
+    : "";
+  el.innerHTML = `韭圈儿分位：${rows.join("；")}`
+    + (okAll
+        ? `　<span style="color:var(--green)">✓ 已是前一交易日</span>`
+        : `　<span style="color:var(--amber)">⚠ 还没更新到前一交易日</span>`)
+    + pulledTxt;
+}
 async function loadPercentiles(force){
   if(!force){
     try{
@@ -1476,6 +1511,8 @@ async function loadJiucai(force){
     }
   }
   try{ localStorage.setItem(JC_CACHE, JSON.stringify({at:Date.now(), data:JIUCAI})); }catch(e){}
+  // 记下「这次读到了数据」的时间（界面顶部显示「本次刷新 HH:MM」用）
+  state.jcPulledAt = Date.now();
   return !!(JIUCAI.items && Object.keys(JIUCAI.items).length);
 }
 /* 韭圈儿专用公式：分位越高越不投，越低系数越大
@@ -2253,7 +2290,7 @@ function renderSec1(){
       <div class="grid">
         <div class="nmcell">
           <div class="nmrow"><span class="nm2">${it.name}</span>${jc?(hasAuto?jcBadge(it):`<span class="fb ${autoPct?"fb-stale":"fb-none"}" title="${autoPct?"数据还是 "+autoDate+" 的，没更新到前一交易日":"没获取到前一交易日的分位"}">?</span>`):pctBadge(it)}</div>
-          <span class="code2">${it.code}${autoDate?` · ${autoDate}`:""}${(!q&&!jc)?` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`:""}</span>
+          <span class="code2">${it.code}${autoDate?(jc?` · <span style="color:var(--green)">前一交易日 ${autoDate}</span>`:` · ${autoDate}`):""}${(!q&&!jc)?` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`:""}</span>
         </div>
         ${pctCell}
         ${chgCell}
@@ -2400,7 +2437,9 @@ function render(){
     ? { id:ae.dataset.id, k:ae.dataset.k, pos:ae.selectionStart, panel:ae.closest(".expand")?.dataset.panel||"" }
     : null;
   state.list1.forEach(remember); state.list3.forEach(remember);
-  renderSec1(); renderSec2(); if(SHOW_MON) renderMon(); renderTotals(); save();
+  renderSec1(); renderSec2(); if(SHOW_MON) renderMon(); renderTotals();
+  try{ markJcTime(); }catch(e){}      // 顶部「韭圈儿分位拿到哪一天」
+  save();
   if(fi){
     const n=document.querySelector(`input[data-id="${fi.id}"][data-k="${fi.k}"]`);
     if(n){
@@ -2918,33 +2957,38 @@ function allCodes(){
   return [...prio, ...rest];
 }
 
-/* 把一条行情写进行情表（统一入口，避免各处字段写岔） */
+/* 把一条行情写进行情表（统一入口，避免各处字段写岔）
+   ts 只存**交易所时间戳**（秒/毫秒）；如果上游只给了日期（8位/带横杠），
+   就存 0 表示"没有精确时间"，不要伪造一个时间戳。 */
 function putQuote(c, got){
   const ok = got && !got.error && got.price>0 && Number.isFinite(+got.price) && Number.isFinite(+got.pct);
   if(ok){
+    const rawTs = got.ts;
+    const isDateOnly = rawTs===undefined || rawTs===null || rawTs===""
+                    || /^\d{8}$/.test(String(rawTs)) || /^\d{4}-\d{2}-\d{2}$/.test(String(rawTs));
+    const tsMs = isDateOnly ? 0 : qTs(rawTs);
     quotes[c]={ price:+got.price, prev:+got.prev||0, pct:+got.pct,
-                date:String(got.date||"").replace(/-/g,""), ts:qTs(got.ts),
+                date:String(got.date||"").replace(/-/g,""), ts:tsMs,
                 src:got.src||"代理", at:Date.now() };
     delete failCache[c];
     lastGood[c]={ price:+got.price, prev:+got.prev||0, pct:+got.pct,
-                  date:String(got.date||"").replace(/-/g,""), ts:qTs(got.ts), at:Date.now() };
+                  date:String(got.date||"").replace(/-/g,""), ts:tsMs, at:Date.now() };
     return true;
   }
   // ★ 失败时也要记「什么时候失败的」，否则界面上的时间会被误当成"刚更新"
-  quotes[c]={ err:(got&&got.error)||"无行情", at:Date.now(), ts:null, staleFrom:(lastGood[c]||{}).at||0 };
+  quotes[c]={ err:(got&&got.error)||"无行情", at:Date.now(), ts:0, staleFrom:(lastGood[c]||{}).at||0 };
   return false;
 }
-/* 这条行情是多少秒之前拿到的（用于判断「数据是不是旧的」）。
-   注意：以前这里在 ts 缺失时会回退到 Date.now()，导致「旧价格 + 新时间」，
-   看起来像最新数据。现在 ts 缺失就返回 null，界面显示「—」。 */
+/* 这条行情是多少秒之前拿到的。
+   只有「有精确时间戳」才判断滞后；只有日期的不算（同一天内都算新鲜）。 */
 function quoteAgeSec(c){
   const q=quotes[c];
   if(!q || q.err) return null;
-  const ts=q.ts;
-  if(ts===undefined || ts===null) return null;
-  const ms = typeof ts==="number" ? ts : Date.parse(String(ts));
-  if(!isFinite(ms)) return null;
-  return Math.max(0, Math.round((Date.now()-ms)/1000));
+  const ms = q.ts || 0;
+  if(!ms) return null;                 // 没有精确时间 → 不显示"N分前"
+  const sec = Math.round((Date.now()-ms)/1000);
+  if(sec < -60) return null;           // 未来时间戳视为异常
+  return Math.max(0, sec);
 }
 /* 边拉边显示：每回来一条就重画一次（200ms 合并），不用等整批拉完 */
 let progTimer=null, progPending=false;
@@ -3815,25 +3859,29 @@ setInterval(async ()=>{
   }
 }, 30*1000);
 
-/* ---------- 周一 11:30 重拉韭圈儿分位 ----------
-   周末韭圈儿的十年分位会有轻微变动，周一开盘后重拉一次。
-   每天 11:30 之后如果还没拉过（用 localStorage 记日期），就强制刷新。 */
-const JC_MON_KEY = "dca-jc-monday-pull";
+/* ---------- 每个交易日 11:30 拉「前一交易日」的韭圈儿分位 ----------
+   为什么 11:30：韭圈儿约 10:00 更新前一日数据，11:30 已稳定（A股上午收盘）。
+   周末不动（美股周五收盘的数据周一才有新的），所以只在「周一到周五」跑。
+   判断依据用 localStorage 记当天是否已拉过；检查间隔 1 分钟（到点即触发，不用等很久）。 */
+const JC_DAILY_KEY = "dca-jc-daily-pull";
+const JC_DAILY_HHMM = 1130;
 setInterval(async ()=>{
   const bj = bjNow();
-  const isMonday = bj.getDay() === 1;
+  const dow = bj.getDay();                 // 0=周日 6=周六
+  if(dow === 0 || dow === 6) return;       // 周末不拉
   const {ymd, hm} = bjYmdHm();
-  if(!isMonday || hm < 1130) return;
+  if(hm < JC_DAILY_HHMM) return;
   let last="";
-  try{ last = localStorage.getItem(JC_MON_KEY)||""; }catch(e){}
+  try{ last = localStorage.getItem(JC_DAILY_KEY)||""; }catch(e){}
   if(last === ymd) return;
   try{
-    await loadJiucai(true);          // force
-    localStorage.setItem(JC_MON_KEY, ymd);
-    render();
-    console.log("[周一重拉] 韭圈儿十年分位已刷新");
+    await loadJiucai(true);                // force 刷新
+    localStorage.setItem(JC_DAILY_KEY, ymd);
+    state.jcPulledAt = Date.now();         // 记下这次刷新时间（界面显示用）
+    save(); render();
+    console.log("[每日11:30] 韭圈儿分位已刷新到", jiucaiDate({code:"NDX", jc:"NDX.GI"}) || "?");
   }catch(e){}
-}, 5*60*1000);
+}, 60*1000);
 // 切回页面/重新可见时立刻拉一次（手机上从后台切回来最常见）
 if(typeof document.addEventListener==="function"){
   document.addEventListener("visibilitychange", ()=>{
