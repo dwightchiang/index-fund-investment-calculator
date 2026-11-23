@@ -98,7 +98,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-23f 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-23g 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -416,7 +416,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-23f";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-23g";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -569,9 +569,11 @@ function loadScript(url, ms=8000, charset){
     document.head.appendChild(s);
   });
 }
-/* 加载一个「给全局变量赋值」的脚本（如新浪 hq.sinajs.cn），返回那段文本。
-   新浪返回形如：var hq_str_hf_NQ="25500.5,...,纳斯达克指数期货,0";
-   没法直接拿到脚本文本，所以用一个内联 script 把全局变量读出来再拼回字符串。 */
+/* 加载一个「给全局变量赋值」的脚本，返回那段文本。
+   两类来源：
+     · 新浪 hq.sinajs.cn → var hq_str_hf_NQ="..."
+     · 腾讯 qt.gtimg.cn  → v_usQQQ="..."（变量名是 v_<code>）
+   没法直接拿到脚本文本，所以加载后把全局变量读出来再拼成 "name=\"...\"" 的形式。 */
 function loadScriptText(url, ms, charset, varName){
   return new Promise((resolve,reject)=>{
     const s=document.createElement("script");
@@ -582,14 +584,17 @@ function loadScriptText(url, ms, charset, varName){
     s.onload=()=>{
       done();
       try{
-        // 优先按变量名读；读不到就把 window 上所有 hq_str_* 拼起来
         if(varName && typeof window[varName]==="string"){
           resolve(varName+'="'+window[varName]+'"'); return;
         }
+        // 把 hq_str_*（新浪）和 v_*（腾讯）都收集起来
         const out=[];
         Object.keys(window).forEach(k=>{
-          if(/^hq_str_/.test(k) && typeof window[k]==="string") out.push(k+'="'+window[k]+'"');
+          if(!/^(hq_str_|v_)/.test(k)) return;
+          if(typeof window[k]==="string" && window[k].indexOf("~")>=0 || /^hq_str_/.test(k))
+            out.push(k+'="'+window[k]+'"');
         });
+        if(!out.length){ reject(new Error("脚本没产出变量")); return; }
         resolve(out.join("\n"));
       }catch(e){ reject(e); }
     };
@@ -1312,13 +1317,19 @@ async function fetchNdxDailyPct(){
     pct: Math.round((lastClose-prevClose)/prevClose*10000)/100,
   };
 }
+/* 缓存多久算新鲜：
+   盘后/期货是分钟级变化的，缓存 10 分钟太久 → 缩短到 2 分钟。
+   页面每次刷新行情、或切回页面时都会重新取（见 refreshQuotes / visibilitychange）。 */
+const AH_TTL_MS = 2*60*1000;
 async function loadAfterHours(force){
   if(!force){
     try{
       const c=JSON.parse(localStorage.getItem(AH_CACHE)||"null");
-      if(c && c.at && Date.now()-c.at < 10*60*1000 && c.qivPost!==undefined){ AH=c; }
+      if(c && c.at && Date.now()-c.at < AH_TTL_MS && c.qivPost!==undefined){ AH=c; }
     }catch(e){}
   }
+  const stale = force || Date.now()-(AH.at||0) > AH_TTL_MS;
+  if(!stale) return false;
   let changed=false;
 
   // ⓪ NDX 当日涨跌 —— 两套指标都要减它，才能都变成「纯盘后」
@@ -1356,7 +1367,7 @@ async function loadAfterHours(force){
 
   // ③ QQQ 盘后（腾讯美股字段9）→ 本身就是纯盘后，直接可用
   try{
-    const txt = await loadScriptText("https://qt.gtimg.cn/q=usQQQ", 8000, "gbk");
+    const txt = await loadScriptText("https://qt.gtimg.cn/q=usQQQ&_="+Date.now(), 8000, "gbk", "v_usQQQ");
     const m = /v_usQQQ="([^"]*)"/.exec(txt);
     if(m){
       const p = m[1].split("~");
@@ -1365,6 +1376,9 @@ async function loadAfterHours(force){
         AH.qqqPost = Math.round((after-close)/close*10000)/100;
         AH.qqqClose = close; AH.qqqAfter = after;
         changed=true;
+      }else{
+        // 美股盘中时盘后价是 0（还没开始盘后交易），这是正常的
+        AH.qqqPost = null; AH.qqqClose = close||null; AH.qqqAfter = after||null;
       }
     }
   }catch(e){}
@@ -1534,11 +1548,15 @@ function jcCoef(pct){
 }
 /* 为什么没有盘后数据 —— 给状态行一句人话解释 */
 function afterHoursWhyNo(){
-  if(!proxyUsable() && (AH.qivPost===null||AH.qivPost===undefined))
-    return "（QIV 需要代理；期货/QQQ 也没取到）";
+  const why=[];
+  if(!proxyUsable()) why.push("QIV 需要代理（设置里填 Worker 地址）");
   if(AH.qivSameDay===false)
-    return `（QIV 日期 ${AH.qivDateNorm||"?"} 与 NDX ${AH.ndxDate||"?"} 不一致，已弃用）`;
-  return "";
+    why.push(`QIV 日期 ${AH.qivDateNorm||"?"} 与 NDX ${AH.ndxDate||"?"} 不一致`);
+  if(AH.qqqAfter===0||AH.qqqAfter===null)
+    why.push("QQQ 盘后价为 0（美股盘中时段没有盘后交易，收盘后才有）");
+  if(AH.futRaw===null||AH.futRaw===undefined)
+    why.push("期货没取到（新浪接口可能被拦）");
+  return why.length ? `（${why.join("；")}）` : "";
 }
 /* 可选的三路盘后涨跌（下拉菜单用）。
    注意：QIV / QQQ / 期货 三个值都已经统一成「纯盘后」口径（减掉 NDX 当日% 或本身即纯盘后）。 */
@@ -3107,6 +3125,11 @@ async function refreshQuotes(scope, force){
   setTimeLabels();
 }
 setInterval(()=>{ if(autoOn && tradingNow()) refreshQuotes("priority"); }, AUTO_MS);
+/* 盘后/期货：交易时段内每分钟跟着一起刷（它们变化比 A 股行情还快） */
+setInterval(()=>{
+  if(!tradingNow()) return;
+  loadAfterHours(false).then(ok=>{ if(ok) render(); }).catch(()=>{});
+}, AUTO_MS);
 
 /* ---------- 跨设备同步码 ---------- */
 function b64enc(str){
@@ -3658,6 +3681,8 @@ $("#fFill").onclick=()=>{
   save(); updateFilters1(); render(); updateRetryUI();
 };
 $("#btnRefresh").onclick=async ()=>{
+  // 刷新时顺带把「盘后涨跌」也重新取一次（QIV / QQQ / 期货都是分钟级的）
+  loadAfterHours(true).then(()=>render()).catch(()=>{});
   if(tab==="s3"){ await loadPercentiles(true); render(); refreshQuotes("mon", true); }
   else { refreshQuotes("main", true); }
 };
@@ -3887,11 +3912,15 @@ if(typeof document.addEventListener==="function"){
   document.addEventListener("visibilitychange", ()=>{
     if(document.visibilityState==="visible" && cloudToken() && !cloudBusy)
       setTimeout(()=>cloudPull(), 300);
+    // 盘后/期货也顺手刷一下（后台期间可能已经变了）
+    if(document.visibilityState==="visible")
+      loadAfterHours(false).then(ok=>{ if(ok) render(); }).catch(()=>{});
   });
 }
 if(typeof window!=="undefined" && typeof window.addEventListener==="function"){
   window.addEventListener("focus", ()=>{
     if(cloudToken() && !cloudBusy) cloudPull();
+    loadAfterHours(false).then(ok=>{ if(ok) render(); }).catch(()=>{});
   });
 }
 // 启动只拉「定投里分位 <10 + 回撤」；监测已隐藏不再拉
