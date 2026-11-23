@@ -98,7 +98,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-23c 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-23d 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -415,7 +415,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-23c";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-23d";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1186,6 +1186,42 @@ function chgOf(it){
 }
 
 /* ---------- 计算 ---------- */
+/* ---------- 纳指期货：以北京时间 15:00 为基准 ----------
+   为什么：15:00 前买入基金按当日净值，所以要拿「15:00 那一刻的期货点位」
+   作为参照，看 15:00 → 现在 这段时间期货又走了多少。
+   记录方式：每到 15:00（或 15:00 后第一次打开页面）存一份基准点位，
+   当天内一直用这份；跨日重置。 */
+const FUT_BASE_KEY = "dca-fut-base";
+const FUT_BASE_HHMM = 1500;      // 北京时间 15:00
+function bjNow(){
+  const now = new Date();
+  const utc = now.getTime() + now.getTimezoneOffset()*60000;
+  return new Date(utc + 8*3600000);     // 北京时间
+}
+function bjYmdHm(){
+  const d = bjNow();
+  const p = n => String(n).padStart(2,"0");
+  return { ymd:`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`,
+           hm:d.getHours()*100+d.getMinutes(), hour:d.getHours(), min:d.getMinutes() };
+}
+/* 读/写 15:00 基准点位。返回 {price, date, at} 或 null */
+function getFutBase(){
+  try{
+    const b = JSON.parse(localStorage.getItem(FUT_BASE_KEY)||"null");
+    const {ymd} = bjYmdHm();
+    if(b && b.date === ymd && isFinite(b.price)) return b;   // 当天的有效
+    return null;
+  }catch(e){ return null; }
+}
+function setFutBase(price){
+  const {ymd} = bjYmdHm();
+  const b = { price, date: ymd, at: Date.now() };
+  try{ localStorage.setItem(FUT_BASE_KEY, JSON.stringify(b)); }catch(e){}
+  return b;
+}
+/* 现在是「基准时刻之后」吗（15:00 以后） */
+function afterFutBaseTime(){ return bjYmdHm().hm >= FUT_BASE_HHMM; }
+
 /* ---------- 盘后涨跌（纳斯达克100） ----------
    ★ 统一口径：盘后涨跌 = 盘后指标% − NDX当日%
    为什么必须减 NDX%：
@@ -1193,13 +1229,31 @@ function chgOf(it){
      · 期货 = 从上次结算到现在的累计（含盘中）
    两者都减掉 NDX 当日涨幅，才都是「纯盘后」，对比才有意义。
 
+   ★ 前提：NDX% 必须是**已收盘**那条的涨跌，且 QIV 日期要与它一致。
+     否则"今天的盘中"减"昨天的收盘"会算出 -11% 这种荒唐值。
+
    NDX 当日% 来自腾讯日K（Access-Control-Allow-Origin: *，浏览器可直连）。
    QIV 官方站无 CORS，必须经代理（/qiv）；代理不通时退回期货（新浪 hf_NQ）。 */
 const AH_CACHE = "dca-afterhours-cache";
-/* 拉 NDX 最近两个交易日，算当日涨跌%（收盘比前收） */
+/* 拉 NDX 的「已收盘」日线，算当日涨跌%（收盘比前收）。
+   ★ 坑：美股盘中时，腾讯日K的最后一条是「今天还没收盘的实时记录」，
+     拿它和前一条比会得到「今天盘中涨跌」，而 QIV 是「上一交易日收盘后」的数据。
+     两者日期不同相减 → 出现 -11% 这种荒唐值。
+   ★ 解决：只接受**已收盘**的那条。判断依据：
+       last.date 严格早于「美东今天」；或者该条成交量已接近完整交易日水平。
+     更稳的做法：如果最后一条的日期 == 美东今天，说明还在盘中，退回倒数第二条。 */
+function nyToday(){
+  // 美东日期（考虑夏令时粗算：3~10 月 UTC-4，其余 UTC-5）
+  const now=new Date();
+  const utc=now.getTime()+now.getTimezoneOffset()*60000;
+  const m=now.getUTCMonth()+1;
+  const off=(m>=3 && m<=10) ? -4 : -5;
+  const d=new Date(utc+off*3600000);
+  return d.toISOString().slice(0,10);
+}
 async function fetchNdxDailyPct(){
   const u = "https://web.ifzq.gtimg.cn/appstock/app/usfqkline/get?"
-          + "_var=kline_dayqfq&param=usNDX,day,,,6,qfq&_=" + Date.now();
+          + "_var=kline_dayqfq&param=usNDX,day,,,8,qfq&_=" + Date.now();
   const r = await fetchWithTimeout(u, 10000);
   if(!r.ok) throw new Error("ndx-"+r.status);
   const txt = await r.text();
@@ -1207,12 +1261,18 @@ async function fetchNdxDailyPct(){
   if(i < 0) throw new Error("ndx-parse");
   const j = JSON.parse(txt.slice(i));
   const days = ((j.data||{}).usNDX||{}).day || [];
-  if(days.length < 2) throw new Error("ndx-short");
-  const prevClose = parseFloat(days[days.length-2][2]);
-  const lastClose = parseFloat(days[days.length-1][2]);
+  if(days.length < 3) throw new Error("ndx-short");
+
+  // 丢掉「美东今天」那条（还在盘中，不是收盘价）
+  const today = nyToday();
+  let end = days.length;
+  while(end > 2 && String(days[end-1][0]) >= today) end--;
+  const last = days[end-1], prev = days[end-2];
+  const prevClose = parseFloat(prev[2]);
+  const lastClose = parseFloat(last[2]);
   if(!isFinite(prevClose) || !isFinite(lastClose) || !prevClose) throw new Error("ndx-bad");
   return {
-    date: days[days.length-1][0],
+    date: last[0],
     prevClose, close: lastClose,
     pct: Math.round((lastClose-prevClose)/prevClose*10000)/100,
   };
@@ -1236,6 +1296,7 @@ async function loadAfterHours(force){
   }catch(e){ /* 拿不到就沿用上次的 */ }
 
   // ① QIV（经代理）→ 纯盘后 = QIV% − NDX%
+  //    ★ 日期校验：QIV 的日期必须与 NDX 日线一致，否则相减没有意义
   if(proxyUsable()){
     try{
       const r=await fetchWithTimeout(proxyBase()+"/qiv", 15000);
@@ -1243,14 +1304,35 @@ async function loadAfterHours(force){
         const j=await r.json();
         if(j && j.pct!==null && j.pct!==undefined){
           AH.qiv = +j.pct;
-          AH.qivPost = (ndxPct===null||ndxPct===undefined) ? null
-                     : Math.round((j.pct - ndxPct)*100)/100;
           AH.qivDate = j.date || "";
+          // QIV 日期形如 11/20/2026 → 2026-11-20
+          const mm=/(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(AH.qivDate||"");
+          const qd = mm ? `${mm[3]}-${String(mm[1]).padStart(2,"0")}-${String(mm[2]).padStart(2,"0")}` : "";
+          AH.qivDateNorm = qd;
+          AH.qivSameDay = !!(qd && AH.ndxDate && qd===AH.ndxDate);
+          // 日期不一致 → 不能相减，宁可空着也别给错数
+          AH.qivPost = (!AH.qivSameDay || ndxPct===null||ndxPct===undefined) ? null
+                     : Math.round((j.pct - ndxPct)*100)/100;
           changed=true;
         }
       }
     }catch(e){ /* 代理不通，走期货 */ }
   }
+
+  // ③ QQQ 盘后（腾讯美股字段9）→ 本身就是纯盘后，直接可用
+  try{
+    const txt = await loadScriptText("https://qt.gtimg.cn/q=usQQQ", 8000, "gbk");
+    const m = /v_usQQQ="([^"]*)"/.exec(txt);
+    if(m){
+      const p = m[1].split("~");
+      const close = parseFloat(p[3]), after = parseFloat(p[9]);
+      if(isFinite(close) && isFinite(after) && close>0 && after>0){
+        AH.qqqPost = Math.round((after-close)/close*10000)/100;
+        AH.qqqClose = close; AH.qqqAfter = after;
+        changed=true;
+      }
+    }
+  }catch(e){}
 
   // ② 期货（新浪 hf_NQ，JSONP）→ 同样减 NDX%，与 QIV 严格同口径
   {
@@ -1261,11 +1343,27 @@ async function loadAfterHours(force){
         const p = m[1].split(",");
         const last = parseFloat(p[0]), prev = parseFloat(p[7]);
         if(isFinite(last) && isFinite(prev) && prev){
-          const raw = Math.round((last-prev)/prev*10000)/100;
-          AH.futRaw = raw;
-          AH.fut = (ndxPct===null||ndxPct===undefined) ? null
-                 : Math.round((raw - ndxPct)*100)/100;
+          AH.futPrice = last;
           AH.futTime = p[6] || "";
+          // 基准：北京时间 15:00 的点位（15:00 前买入按当日净值，所以以它为参照）
+          let base = getFutBase();
+          if(!base && afterFutBaseTime()){
+            // 15:00 后第一次打开、当天还没基准 → 用当前价补一个（会显示"基准取自 HH:MM"）
+            base = setFutBase(last);
+            AH.futBaseLate = true;
+          } else if(base){
+            AH.futBaseLate = false;
+          }
+          AH.futBase = base ? base.price : null;
+          AH.futBaseDate = base ? base.date : "";
+          AH.futBaseAt = base ? base.at : 0;
+          // 15:00 基准 → 现在的涨跌%
+          AH.fut = (base && base.price) ? Math.round((last - base.price)/base.price*10000)/100 : null;
+          // 原来的「对昨结」涨跌（保留：用于跟 NDX% 相减做纯盘后对比）
+          AH.futRaw = Math.round((last-prev)/prev*10000)/100;
+          // 纯盘后口径（与 QIV 可比）：期货昨结% − NDX当日%
+          AH.futPost = (ndxPct===null||ndxPct===undefined) ? null
+                     : Math.round((AH.futRaw - ndxPct)*100)/100;
           changed=true;
         }
       }
@@ -1397,21 +1495,55 @@ function jcCoef(pct){
   if(pct>=5)  return 10;
   return 20;
 }
-/* 盘后涨跌取哪个值。
-   ★ AH.qivPost 和 AH.fut 都已经是「减掉 NDX 当日%」后的纯盘后值，可直接比较。
-   优先级：手填 → QIV纯盘后 → 期货纯盘后 */
-function afterHoursOf(it){
-  const m=num(it.mpct3);                      // 手填盘后涨跌
-  if(m!==null) return m;
+/* 为什么没有盘后数据 —— 给状态行一句人话解释 */
+function afterHoursWhyNo(){
+  if(!proxyUsable() && (AH.qivPost===null||AH.qivPost===undefined))
+    return "（QIV 需要代理；期货/QQQ 也没取到）";
+  if(AH.qivSameDay===false)
+    return `（QIV 日期 ${AH.qivDateNorm||"?"} 与 NDX ${AH.ndxDate||"?"} 不一致，已弃用）`;
+  return "";
+}
+/* 可选的三路盘后涨跌（下拉菜单用）。
+   注意：QIV / QQQ / 期货 三个值都已经统一成「纯盘后」口径（减掉 NDX 当日% 或本身即纯盘后）。 */
+function afterHoursOptions(it){
+  const out=[];
+  out.push({ key:"auto", label:"自动（优先 QIV）", val:afterHoursAuto(it) });
+  if(AH.qivPost!==null && AH.qivPost!==undefined)
+    out.push({ key:"qiv", label:`QIV ${AH.qivPost>=0?"+":""}${AH.qivPost.toFixed(2)}%`, val:AH.qivPost });
+  if(AH.qqqPost!==null && AH.qqqPost!==undefined)
+    out.push({ key:"qqq", label:`QQQ ${AH.qqqPost>=0?"+":""}${AH.qqqPost.toFixed(2)}%`, val:AH.qqqPost });
+  if(AH.futPost!==null && AH.futPost!==undefined)
+    out.push({ key:"fut", label:`期货 ${AH.futPost>=0?"+":""}${AH.futPost.toFixed(2)}%`, val:AH.futPost });
+  out.push({ key:"manual", label:"手填…", val:num(it.mpct3) });
+  return out;
+}
+/* 「自动」的取值顺序：QIV → QQQ → 期货 */
+function afterHoursAuto(it){
   if(AH.qivPost!==null && AH.qivPost!==undefined) return AH.qivPost;
-  if(AH.fut!==null && AH.fut!==undefined) return AH.fut;
+  if(AH.qqqPost!==null && AH.qqqPost!==undefined) return AH.qqqPost;
+  if(AH.futPost!==null && AH.futPost!==undefined) return AH.futPost;
   return null;
 }
-/* 当前用的是哪个源（手填 / QIV / 期货），用于在界面上说明 */
+/* 盘后涨跌取哪个值：按 it.ahPick（下拉选择）决定，默认 auto */
+function afterHoursOf(it){
+  const pick = it.ahPick || "auto";
+  if(pick==="manual") return num(it.mpct3);
+  if(pick==="qiv")  return (AH.qivPost ?? null);
+  if(pick==="qqq")  return (AH.qqqPost ?? null);
+  if(pick==="fut")  return (AH.futPost ?? null);
+  return afterHoursAuto(it);
+}
+/* 当前用的是哪个源（手填 / QIV / QQQ / 期货），用于在界面上说明 */
 function afterHoursSrc(it){
-  if(num(it.mpct3)!==null) return "手填";
+  const pick = it.ahPick || "auto";
+  if(pick==="manual") return "手填";
+  if(pick==="qiv")    return "QIV";
+  if(pick==="qqq")    return "QQQ";
+  if(pick==="fut")    return "期货";
+  // auto
   if(AH.qivPost!==null && AH.qivPost!==undefined) return "QIV";
-  if(AH.fut!==null && AH.fut!==undefined) return "期货";
+  if(AH.qqqPost!==null && AH.qqqPost!==undefined) return "QQQ";
+  if(AH.futPost!==null && AH.futPost!==undefined) return "期货";
   return "";
 }
 function calcJC(it){
@@ -1516,9 +1648,10 @@ function calc1(it){
   const min=minPctOf(it), chg=chgOf(it);
   const o={min, chg, score:0, amount:0, tag:"off", text:""};
   const yw = !!state.yw;
-  const coef = yw ? yearCoefOf(it) : null;
+  // 纳指100（jc20 行）走自己的公式，不参与「年数加权」
+  const coef = (yw && it.formula!=="jc20") ? yearCoefOf(it) : null;
   o.coef = coef;
-  o.years = yw ? yearsOf(it) : null;
+  o.years = (yw && it.formula!=="jc20") ? yearsOf(it) : null;
   if(chg.pct===null){ o.tag="na"; o.text="无行情"; return o; }
   if(min===null){ o.text="未填分位"; return o; }
   const unit=()=>num(it.unit)??10;
@@ -2086,13 +2219,18 @@ function renderSec1(){
     const pctTxt = chg.pct===null?"—":(chg.pct>=0?"+":"")+chg.pct.toFixed(2)+"%";
     const cls = chg.pct>0?"up":chg.pct<0?"dn":"flat";
     const q = hasQuote(it);
+    // 行情滞后标记：超过 2 分钟没更新 → 在涨跌后面标出来（1B0690 那种看不到的滞后要靠这个暴露）
+    const qAge = jc ? null : quoteAgeSec(it.code);
+    const lagTxt = (qAge!==null && qAge > 120)
+      ? `<span style="font-size:10px;color:var(--amber)"> ·${qAge<3600?Math.round(qAge/60)+"分":Math.round(qAge/3600)+"时"}前</span>`
+      : "";
     // 韭圈儿行：涨跌那格显示「盘后涨跌」（跌绿涨红，和主列表同色系），没有则显示系数
     const ahv = jc ? afterHoursOf(it) : null;
     const chgCell = jc
       ? (ahv!==null
           ? `<div class="cell" style="text-align:center;font-size:12px;color:var(--dim)">盘后<br><b style="color:${ahv>0?'var(--red)':ahv<0?'var(--green)':'var(--gray)'}">${ahv>=0?"+":""}${ahv.toFixed(2)}%</b></div>`
           : `<div class="cell" style="text-align:center;font-size:12px;color:var(--dim)">系数<br><b style="color:${r.coef?"var(--fg)":"var(--gray)"}">${r.coef||"0"}</b></div>`)
-      : (q ? `<div class="chg ${cls}">${pctTxt}</div>`
+      : (q ? `<div class="chg ${cls}">${pctTxt}${lagTxt}</div>`
            : `<input inputmode="decimal" data-k="mpct" data-id="${it.id}" value="${it.mpct??""}" placeholder="涨跌%">`);
     const fmtAt=v=>{ if(!v) return ""; const d=new Date(typeof v==="number"?v:String(v).slice(0,10)+"T12:00:00"); return `${d.getMonth()+1}-${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; };
     const autoD=autoYmdOf(it);
@@ -2129,17 +2267,40 @@ function renderSec1(){
         <div><label>单位/元</label><input inputmode="decimal" data-k="unit" data-id="${it.id}" value="${it.unit??10}"></div>
         <div><label>手动涨跌%</label><input inputmode="decimal" data-k="mpct" data-id="${it.id}" value="${it.mpct??""}" placeholder="自动"></div>
         <div><label>数据起点</label><input data-k="startDate" data-id="${it.id}" value="${it.startDate??""}" placeholder="${startOf(it)||"YYYY-MM-DD"}"></div>
-        ${jc?`<div><label>盘后涨跌%（手填，留空=自动）</label><input inputmode="decimal" data-k="mpct3" data-id="${it.id}" value="${it.mpct3??""}" placeholder="${AH.qivPost!==null?"QIV "+AH.qivPost.toFixed(2)+"%":(AH.fut!==null?"期货 "+AH.fut.toFixed(2)+"%":"自动")}"></div>`:""}
-        <div><label>状态</label><div style="font-size:12px;color:var(--dim);padding-top:8px">${
-          jc ? `(20−分位)×系数${r.ah!==null?` − 盘后${r.ah>=0?"+":""}${r.ah.toFixed(2)}%×${AH_K}`:""}`
-             + ` · ${r.text}` + (r.base!==undefined?` · 基础¥${r.base}`:"") + (r.ahAdj?` · 盘后调整${r.ahAdj>0?"+":""}${r.ahAdj}`:"")
-             + ` → ¥${r.amount} · 韭圈儿 ${jcD||"—"}`
-             + (r.ah!==null?` · 来源${afterHoursSrc(it)}`:"")
-             + (AH.ndxPct!=null?` · NDX当日${AH.ndxPct>=0?"+":""}${AH.ndxPct}%`:"")
-             + (AH.qiv!=null?` · QIV原始${AH.qiv}%`:"")
-             + (AH.futRaw!=null?` · 期货原始${AH.futRaw}%`:"")
-             : `${r.text} · ${chg.date ? dateLabel(chg.date)+" "+(chg.src||"") : (chg.err || (chg.src? chg.src+"（实时）" : ""))}`
-        }${r.coef!=null?` · 起点${startOf(it)} 满${r.years}年 ×${r.coef}`:""}${manualNote}</div></div>
+        ${jc?(()=>{
+          const opts=afterHoursOptions(it);
+          const cur=it.ahPick||"auto";
+          const optH=opts.map(o=>`<option value="${o.key}"${o.key===cur?" selected":""}>${o.label}</option>`).join("");
+          const manual = cur==="manual"
+            ? `<input inputmode="decimal" data-k="mpct3" data-id="${it.id}" value="${it.mpct3??""}" placeholder="手填%" style="margin-top:4px">`
+            : "";
+          return `<div><label>盘后涨跌（选一个）</label>
+            <select data-k="ahPick" data-id="${it.id}" style="margin-top:2px">${optH}</select>
+            ${manual}</div>`;
+        })():""}
+        <div style="grid-column:1/-1"><label>状态</label><div style="font-size:12px;color:var(--dim);padding-top:4px;line-height:1.7">${
+          jc ? (()=>{
+            const lines=[];
+            if(r.ah!==null){
+              lines.push(`算式：(20−${r.pct}) × ${r.coef} = 基础 ¥${r.base}`,
+                         `盘后：${afterHoursSrc(it)} ${r.ah>=0?"+":""}${r.ah.toFixed(2)}% × ${AH_K} = ${r.ahAdj>0?"+":""}${r.ahAdj}`,
+                         `金额：¥${r.base} ${r.ahAdj>=0?"+":"−"} ${Math.abs(r.ahAdj)} = <b style="color:var(--fg)">¥${r.amount}</b>`);
+            }else{
+              lines.push(`算式：(20−${r.pct}) × ${r.coef} = <b style="color:var(--fg)">¥${r.amount}</b>`,
+                         `盘后：没有可用数据${afterHoursWhyNo()}`);
+            }
+            const ref=[];
+            if(AH.ndxDate) ref.push(`NDX ${AH.ndxDate} 收盘 ${AH.ndxPct>=0?"+":""}${AH.ndxPct}%`);
+            if(AH.qiv!=null) ref.push(`QIV原始 ${AH.qiv}%${AH.qivSameDay===false?"（日期不符，已弃用）":""}`);
+            if(AH.futRaw!=null) ref.push(`期货原始 ${AH.futRaw}%`);
+            if(ref.length) lines.push(`参考：${ref.join("；")}`);
+            if(jcD) lines.push(`韭圈儿：${jcD}`);
+            return lines.join("<br>");
+          })()
+             : `${r.text}${chg.date?` · ${dateLabel(chg.date)} ${chg.src||""}`:(chg.err||(chg.src?` · ${chg.src}（实时）`:""))}`
+        }</div></div>
+        ${(!jc && r.coef!=null)?`<div style="grid-column:1/-1;font-size:12px;color:var(--dim)">年数加权：起点 ${startOf(it)}，满 <b>${r.years??"—"}</b> 年 → 系数 ×${r.coef}</div>`:""}
+        ${manualNote?`<div style="grid-column:1/-1;font-size:11px;color:var(--gray)">${manualNote.replace(/^ · /,"")}</div>`:""}
         <div style="grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap">
           <button class="mini" data-top="${it.id}">⤒ 置顶</button>
           <button class="mini" data-up="${it.id}">↑ 上移</button>
@@ -2769,8 +2930,21 @@ function putQuote(c, got){
                   date:String(got.date||"").replace(/-/g,""), ts:qTs(got.ts), at:Date.now() };
     return true;
   }
-  quotes[c]={ err:(got&&got.error)||"无行情", at:Date.now() };
+  // ★ 失败时也要记「什么时候失败的」，否则界面上的时间会被误当成"刚更新"
+  quotes[c]={ err:(got&&got.error)||"无行情", at:Date.now(), ts:null, staleFrom:(lastGood[c]||{}).at||0 };
   return false;
+}
+/* 这条行情是多少秒之前拿到的（用于判断「数据是不是旧的」）。
+   注意：以前这里在 ts 缺失时会回退到 Date.now()，导致「旧价格 + 新时间」，
+   看起来像最新数据。现在 ts 缺失就返回 null，界面显示「—」。 */
+function quoteAgeSec(c){
+  const q=quotes[c];
+  if(!q || q.err) return null;
+  const ts=q.ts;
+  if(ts===undefined || ts===null) return null;
+  const ms = typeof ts==="number" ? ts : Date.parse(String(ts));
+  if(!isFinite(ms)) return null;
+  return Math.max(0, Math.round((Date.now()-ms)/1000));
 }
 /* 边拉边显示：每回来一条就重画一次（200ms 合并），不用等整批拉完 */
 let progTimer=null, progPending=false;
@@ -3406,6 +3580,18 @@ function updateFilters1(){
   }
 }
 $("#sortSel").addEventListener("change", ()=>{ applySort($("#sortSel").value); });
+
+/* 盘后涨跌的下拉菜单（选择用哪个源），以及手填框 */
+document.addEventListener("change", e=>{
+  const t=e.target;
+  if(t.dataset && t.dataset.k==="ahPick"){
+    const it=[...state.list1,...state.list2,...state.list3].find(x=>x.id===t.dataset.id);
+    if(!it) return;
+    it.ahPick = t.value;
+    it.rev = Date.now();
+    save(); render(); scheduleCloudPush();
+  }
+});
 $("#fTodo").onclick=()=>{ onlyTodo=!onlyTodo; updateFilters1(); render(); };
 $("#fExpandAll").onclick=()=>{
   const allOpen = state.list1.length>0 && state.list1.every(it=>openPanels.has(it.id));
@@ -3606,6 +3792,48 @@ backfillNames();
 cloudPull();                                 // 开机先看云端有没有新的手填值
 // 自动拉取：60 秒一次（原来是 5 分钟，等太久）。Secret gist/文件很小，不心疼流量。
 setInterval(()=>{ if(cloudToken() && !cloudBusy && !applyingRemote) cloudPull(); }, 60*1000);
+
+/* ---------- 15:00 期货基准：到点自动记一次 ----------
+   15:00 前买入基金按当日净值，所以以 15:00 的期货点位为参照。
+   每 30 秒检查一次：到了 15:00 且当天还没基准 → 拉一次期货存基准。 */
+setInterval(async ()=>{
+  const {hm} = bjYmdHm();
+  if(hm >= FUT_BASE_HHMM && !getFutBase()){
+    try{
+      const txt = await loadScriptText("https://hq.sinajs.cn/list=hf_NQ", 8000, "gbk");
+      const m = /hq_str_hf_NQ="([^"]*)"/.exec(txt);
+      if(m){
+        const price = parseFloat(m[1].split(",")[0]);
+        if(isFinite(price) && price>0){
+          setFutBase(price);
+          await loadAfterHours(true);
+          render();
+          console.log("[15:00基准] 已记录期货基准点位", price);
+        }
+      }
+    }catch(e){}
+  }
+}, 30*1000);
+
+/* ---------- 周一 11:30 重拉韭圈儿分位 ----------
+   周末韭圈儿的十年分位会有轻微变动，周一开盘后重拉一次。
+   每天 11:30 之后如果还没拉过（用 localStorage 记日期），就强制刷新。 */
+const JC_MON_KEY = "dca-jc-monday-pull";
+setInterval(async ()=>{
+  const bj = bjNow();
+  const isMonday = bj.getDay() === 1;
+  const {ymd, hm} = bjYmdHm();
+  if(!isMonday || hm < 1130) return;
+  let last="";
+  try{ last = localStorage.getItem(JC_MON_KEY)||""; }catch(e){}
+  if(last === ymd) return;
+  try{
+    await loadJiucai(true);          // force
+    localStorage.setItem(JC_MON_KEY, ymd);
+    render();
+    console.log("[周一重拉] 韭圈儿十年分位已刷新");
+  }catch(e){}
+}, 5*60*1000);
 // 切回页面/重新可见时立刻拉一次（手机上从后台切回来最常见）
 if(typeof document.addEventListener==="function"){
   document.addEventListener("visibilitychange", ()=>{

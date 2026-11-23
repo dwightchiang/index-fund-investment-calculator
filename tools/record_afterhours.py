@@ -56,10 +56,14 @@ def get_qiv():
         dat = re.search(r"DATA AS OF\s*([\d/]+)", html)
         if not cur:
             return None
+        # 11/20/2026 → 2026-11-20
+        d = dat.group(1) if dat else ""
+        m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{4})", d)
+        norm = f"{m.group(3)}-{int(m.group(1)):02d}-{int(m.group(2)):02d}" if m else ""
         return {"qiv": num(cur.group(1)),
                 "change": num(chg.group(1)) if chg else None,
                 "pct": float(pct.group(1)) if pct else None,
-                "date": dat.group(1) if dat else ""}
+                "date": d, "date_norm": norm}
     except Exception as e:
         print(f"  [qiv] 失败: {e!r}"[:120])
         return None
@@ -80,7 +84,13 @@ def get_qqq_after():
 
 
 def get_future():
-    """纳指期货 hf_NQ：最新价 + 昨结。"""
+    """纳指期货 hf_NQ：最新价 + 昨结。
+
+    ★ 坑：期货的「昨结」每天固定时点切换（约北京时间早上），
+      所以白天读到的涨跌是「对 11-20 结算」的，晚上会变成「对 11-21 结算」。
+      与 NDX 日线的日期可能对不上 → 相减会得到荒唐值。
+      这里把「昨结所属日期」也返回，由调用方校验日期一致性。
+    """
     try:
         r = requests.get("https://hq.sinajs.cn/list=hf_NQ",
                          headers={**UA, "Referer": "https://finance.sina.com.cn/"},
@@ -148,7 +158,16 @@ def record(force=False):
     fut = get_future()
     ndx = get_ndx_daily()
 
-    # NDX 最新一条 = 最近交易日
+    # ★ 丢掉「美东今天」那条：美股盘中时东财/腾讯的最后一条是实时记录，
+    #   不是收盘价。拿它减前一条 = 今天盘中涨跌，与 QIV（上一交易日收盘后）不同日。
+    today_ny = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=4)   # 夏令时近似
+    ny_ymd = today_ny.strftime("%Y-%m-%d")
+    ndx = [d for d in ndx if d["date"] < ny_ymd]
+    if not ndx:
+        print("  拿不到已收盘的 NDX 日线，跳过")
+        return 1
+
+    # NDX 最新一条 = 最近「已收盘」交易日
     last = ndx[-1] if ndx else None
     prev = ndx[-2] if len(ndx) >= 2 else None
 
@@ -168,11 +187,24 @@ def record(force=False):
         "next_date": "",
         "next_pct": None,
     }
-    if rec["ndx_pct"] is not None:
-        if rec["qiv_pct"] is not None:
-            rec["qiv_post"] = round(rec["qiv_pct"] - rec["ndx_pct"], 4)
-        if rec["fut_raw"] is not None:
+    # ★ 日期校验：QIV 的日期必须与 NDX 已收盘日线一致，否则相减无意义
+    qiv_same = bool(qiv and qiv.get("date_norm") and rec["ndx_date"]
+                    and qiv["date_norm"] == rec["ndx_date"])
+    if rec["ndx_pct"] is not None and qiv_same and rec["qiv_pct"] is not None:
+        rec["qiv_post"] = round(rec["qiv_pct"] - rec["ndx_pct"], 4)
+    # ★ 期货也要日期校验：期货的「昨结」切换后就不代表 11-20 了
+    #   判据：期货涨跌% 与 NDX 当日% 的量级不该差太多（同一交易时段）。
+    #   更稳的做法：只有当 |fut_raw - ndx_pct| < 5 个点时才认为是同一天。
+    fut_ok = False
+    if rec["ndx_pct"] is not None and rec["fut_raw"] is not None:
+        if abs(rec["fut_raw"] - rec["ndx_pct"]) <= 5:
             rec["fut_post"] = round(rec["fut_raw"] - rec["ndx_pct"], 4)
+            fut_ok = True
+    rec["fut_same_day"] = fut_ok
+    if not fut_ok and rec["fut_raw"] is not None:
+        print(f"  ⚠️ 期货({rec['fut_raw']}%)与 NDX({rec['ndx_pct']}%)不同交易日，弃用 fut_post")
+    rec["qiv_same_day"] = qiv_same
+    rec["qiv_date_norm"] = (qiv or {}).get("date_norm", "")
 
     # 如果这条 NDX 日线比上次记录的更新，说明上次的「次日」已经出来了 → 回填
     if last:
@@ -201,8 +233,10 @@ def record(force=False):
     save(db)
 
     print(f"  NDX 当日   : {rec['ndx_pct']}%  ({rec['ndx_date']})")
-    print(f"  QIV 原始   : {rec['qiv_pct']}%   → 减NDX后 = {rec['qiv_post']}%")
-    print(f"  期货 原始  : {rec['fut_raw']}%   → 减NDX后 = {rec['fut_post']}%")
+    print(f"  QIV 原始   : {rec['qiv_pct']}%  ({rec['qiv_date_norm'] or '?'})"
+          f" → {'减NDX = '+str(rec['qiv_post'])+'%' if rec['qiv_post'] is not None else '日期不符，弃用'}")
+    print(f"  期货 原始  : {rec['fut_raw']}%"
+          f" → {'减NDX = '+str(rec['fut_post'])+'%' if rec['fut_post'] is not None else '不同交易日，弃用'}")
     print(f"  QQQ 盘后   : {rec['qqq_post']}%  （本身就是纯盘后）")
     print(f"  共 {len(rows)} 条记录 → {OUT}")
     return 0

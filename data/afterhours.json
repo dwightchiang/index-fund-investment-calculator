@@ -2,18 +2,21 @@
  "v": 1,
  "rows": [
   {
-   "at": "2026-11-23 01:56:28",
+   "at": "2026-11-23 22:48:50",
    "qiv_pct": -4.27,
    "qiv_date": "11/20/2026",
-   "qqq_post": 1.4874,
-   "fut_raw": -5.0284,
+   "qqq_post": null,
+   "fut_raw": 5.9813,
    "ndx_date": "2026-11-20",
    "ndx_pct": -5.61,
    "qiv_post": 1.34,
-   "fut_post": 0.5816,
+   "fut_post": null,
    "next_date": "",
-   "next_pct": null
+   "next_pct": null,
+   "fut_same_day": false,
+   "qiv_same_day": true,
+   "qiv_date_norm": "2026-11-20"
   }
  ],
- "updated": "2026-11-23 01:56:28"
+ "updated": "2026-11-23 22:48:50"
 }
