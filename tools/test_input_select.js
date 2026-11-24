@@ -145,8 +145,8 @@ console.log("\n── ③ 源码检查 ──");
 check("有 suppressRowClick 变量", html.includes("suppressRowClick"), true);
 check("行选中判断用了 suppressRowClick",
       /rrow\.closest\("#pane-s1"\) && !suppressRowClick/.test(html), true);
-check("首次 mousedown 会 preventDefault 后 select",
-      /e\.preventDefault\(\);[\s\S]{0,120}t\.select\(\)/.test(html), true);
+check("首次点击会打标记并在之后补全选",
+      /_wantSelectAll\s*=\s*true/.test(html) && html.includes("selectAllLater"), true);
 
 console.log(bad ? `\n${bad} 项不符合预期` : "\n全部通过");
 process.exit(bad ? 1 : 0);

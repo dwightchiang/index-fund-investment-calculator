@@ -113,8 +113,8 @@ setTimeout(() => {
   // ===== 问题 2：输入框点击 = 全选，再点 = 取消全选 =====
   console.log("\n── 问题2：点一次全选、再点取消（详见 test_input_select.js）──");
   check("有 NUM_KEYS 常量", html.includes("const NUM_KEYS"), true);
-  check("首次 mousedown 会 preventDefault 再 select",
-        /e\.preventDefault\(\);[\s\S]{0,120}t\.select\(\)/.test(html), true);
+  check("首次点击会打标记并在之后补全选",
+        /_wantSelectAll\s*=\s*true/.test(html) && html.includes("selectAllLater"), true);
   check("已聚焦时再点 → 取消全选（收成点）",
         /document\.activeElement!==t\) return/.test(html) &&
         /hasSel/.test(html) &&

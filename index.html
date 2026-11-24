@@ -105,7 +105,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-25c 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-25d 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -426,7 +426,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-25c";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-25d";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -2919,31 +2919,78 @@ document.addEventListener("touchend", ()=>{
         （取消选区、按点击位置放光标）。 */
 const NUM_KEYS = ["min","pe","pb","unit","mpct","mpct2","mpct3","high","manual","startDate"];
 
-/* ① 第一次进入（还没聚焦）→ 全选
-   用 mousedown 捕获阶段做，比 focusin 更早、能压住浏览器默认的"放光标"行为 */
+/* ① 第一次点输入框 → 全选
+   ★ 不用 preventDefault（某些浏览器里它会连 focus 一起挡掉，导致全选不生效）。
+   改成：让浏览器正常聚焦，然后在**下一个宏任务**里 select()，
+   这样能压过浏览器"把光标放到点击位置"的默认行为。
+   同时 mouseup / click 后再补一次，防止点击动作把选区清掉。 */
+function selectAllLater(t){
+  if(!t) return;
+  const doSel=()=>{ try{ if(document.activeElement===t) t.select(); }catch(err){} };
+  setTimeout(doSel, 0);
+  requestAnimationFrame(doSel);
+}
+
 document.addEventListener("mousedown", e=>{
   const t=e.target;
   if(!t || t.tagName!=="INPUT") return;
   const k=t.dataset && t.dataset.k;
   if(!k || !NUM_KEYS.includes(k)) return;
   if(t.value==="") return;
-  if(document.activeElement===t) return;      // 已聚焦 → 交给下面的"再点取消"
-  // 阻止默认（默认会把光标放到点击位置），改成全选
-  e.preventDefault();
-  t.focus();
-  try{ t.select(); }catch(err){}
+  if(document.activeElement===t) return;      // 已聚焦 → 交给"再点取消"
+  // 标记：这一次点击要全选（mouseup/click 里补刀）
+  t._wantSelectAll = true;
 }, true);
 
-/* 键盘进入（Tab/回车）→ 全选 */
 document.addEventListener("focusin", e=>{
   const t=e.target;
   if(!t || t.tagName!=="INPUT") return;
   const k=t.dataset && t.dataset.k;
   if(!k || !NUM_KEYS.includes(k)) return;
   if(t.value==="") return;
-  if(t.selectionStart!==t.selectionEnd) return;   // 已经全选好了（上面 mousedown 做的）
-  try{ t.select(); }catch(err){}
+  if(t.selectionStart!==t.selectionEnd) return;   // 已经选中了
+  if(t._wantSelectAll) selectAllLater(t);
+  else if(!t._pointerEntered) selectAllLater(t);  // 键盘进入也全选
 });
+
+/* 鼠标松开后再补一次全选（点击动作会清掉 focus 时设的选区） */
+document.addEventListener("mouseup", e=>{
+  const t=e.target;
+  if(!t || t.tagName!=="INPUT") return;
+  if(!t._wantSelectAll) return;
+  t._wantSelectAll = false;
+  selectAllLater(t);
+}, true);
+document.addEventListener("click", e=>{
+  const t=e.target;
+  if(!t || t.tagName!=="INPUT") return;
+  if(!t.dataset || !t.dataset.k) return;
+  if(!NUM_KEYS.includes(t.dataset.k)) return;
+  if(t.value==="") return;
+  // 如果这次点击后没有选区（浏览器把光标放好了），说明是全选没生效 → 补
+  if(document.activeElement===t && t.selectionStart===t.selectionEnd && !t._userMovedOnce){
+    // 只有在"刚进入这个框"的第一次点击才补，避免妨碍用户第二次点着改某一位
+    if(Date.now()-(t._focusedAt||0) < 300) selectAllLater(t);
+  }
+}, true);
+
+/* 记录聚焦时刻（给上面 click 里判断"刚进入"用） */
+document.addEventListener("focusin", e=>{
+  const t=e.target;
+  if(t && t.tagName==="INPUT" && t.dataset && t.dataset.k){
+    t._focusedAt = Date.now();
+    t._userMovedOnce = false;
+  }
+}, true);
+
+/* 用户自己移动过光标（说明是想局部编辑）→ 以后不再自动全选 */
+document.addEventListener("keydown", e=>{
+  const t=e.target;
+  if(t && t.tagName==="INPUT" && t.dataset && t.dataset.k){
+    if(["ArrowLeft","ArrowRight","Home","End","ArrowUp","ArrowDown"].includes(e.key))
+      t._userMovedOnce = true;
+  }
+}, true);
 
 /* ② 已经聚焦的输入框被再次点击 → 取消全选，光标落到点击处那个字符位置 */
 document.addEventListener("mousedown", e=>{
@@ -4176,18 +4223,38 @@ async function copyText(text){
 }
 $("#btnCopy").onclick=async ()=>{
   const L=["定投 "+new Date().toLocaleString("zh-CN")];
+  // ★ 必须逐行 try/catch：jc20 行（纳指100）的 calcRow 不返回 chg，
+  //   直接写 r.chg.pct 会抛 TypeError，整个 forEach 中断 →
+  //   复制按钮看起来"没反应、也没报错"。这里做健壮处理。
   state.list1.forEach(it=>{
-    const r=calcRow(it);
-    if(r.tag!=="na" && r.min!==null && r.amount!==0)
-      L.push(`【${r.tag==="near"?"临近":"估值"}】${it.name} 分位${fmt(r.min)} 涨跌${fmt(r.chg.pct)}% → ${r.amount<0?"-¥":"¥"}${Math.abs(r.amount)}`);
+    try{
+      const r=calcRow(it);
+      if(r.tag==="na" || r.amount===0 || r.amount===undefined) return;
+      // 分位：普通行用 r.min，jc20 行（纳指100）用 r.pct
+      const pctVal = (r.min!==null && r.min!==undefined) ? r.min
+                   : (r.pct!==null && r.pct!==undefined) ? r.pct : null;
+      if(pctVal===null) return;
+      const chgPct = (r.chg && r.chg.pct!==null && r.chg.pct!==undefined)
+        ? fmt(r.chg.pct) : "—";
+      const label = r.isJC ? "纳指" : (r.tag==="near" ? "临近" : "估值");
+      L.push(`【${label}】${it.name} 分位${fmt(pctVal)} 涨跌${chgPct}% → ${r.amount<0?"-¥":"¥"}${Math.abs(r.amount)}`);
+    }catch(e){
+      console.warn("[copy] 跳过一行：", it && it.name, e);
+    }
   });
-  state.list2.forEach(it=>{const r=calc2(it); if(r.amount>0) L.push(`【回撤】${it.name} 回撤${fmt(r.dd,1)}% 系数${r.coef} → ¥${r.amount}`);});
+  state.list2.forEach(it=>{
+    try{
+      const r=calc2(it);
+      if(r.amount>0) L.push(`【回撤】${it.name} 回撤${fmt(r.dd,1)}% 系数${r.coef} → ¥${r.amount}`);
+    }catch(e){ console.warn("[copy] 跳过回撤行：", it && it.name, e); }
+  });
+  const sum1=$("#sum1") ? ($("#sum1").textContent||"—") : "—";
+  const sum2=$("#sum2") ? ($("#sum2").textContent||"—") : "—";
   const nearTxt=$("#near1")&&$("#near1").textContent;
-  L.push(`合计：定投 ${$("#sum1").textContent}${nearTxt?`（${nearTxt}）`:""}，回撤 ${$("#sum2").textContent}`);
+  L.push(`合计：定投 ${sum1}${nearTxt?`（${nearTxt}）`:""}，回撤 ${sum2}`);
   const text=L.join("\n");
-  const ok=await copyText(text);
-  // ★ 无论自动复制是否"报告成功"，都弹出面板：
-  //   execCommand 可能返回 true 但没真写进剪贴板，只靠 alert 用户会以为复制好了。
+  let ok=false;
+  try{ ok=await copyText(text); }catch(e){ console.warn("[copy] copyText 失败", e); }
   showCopyPanel(text);
   if(ok){
     const dlg=document.querySelector("dialog[open]");
