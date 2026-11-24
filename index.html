@@ -44,6 +44,13 @@
   .pane.on{display:block}
   .hide{display:none!important}   /* 监测暂时隐藏 */
 
+  /* 吸顶操作区：合计/筛选/分段。滚动时固定在 header 下方，
+     这样操作第二屏的指数不必滚回顶部。
+     top 用 JS 实测 header 高度（--hdr-h），手机端 header 会换行变高。 */
+  .stickTop{position:sticky;top:var(--hdr-h,44px);z-index:15;
+            background:rgba(15,23,42,.98);backdrop-filter:blur(8px);
+            margin:0 -2px;padding:0 2px 4px;
+            border-bottom:1px solid rgba(38,51,74,.6)}
   .phead{display:flex;align-items:baseline;gap:8px;margin-bottom:8px;flex-wrap:wrap}
   .phead .t{font-size:14px;color:var(--dim);font-weight:600}
   .phead .sum{font-size:19px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums}
@@ -98,7 +105,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-24d 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-25a 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -201,6 +208,8 @@
 <div class="wrap">
   <!-- ① 定投 -->
   <section class="pane on" id="pane-s1">
+    <!-- 吸顶区：合计 + 筛选 + 分段在滚动时固定，操作第二屏的指数不用滚回顶部 -->
+    <div class="stickTop" id="stickTop">
     <div class="phead">
       <span class="t">今日合计</span><span class="sum" id="sum1">—</span>
       <span id="near1" style="font-size:11px;color:var(--amber)"></span>
@@ -242,6 +251,7 @@
     <div class="filters" id="retryPickRow" style="display:none"></div>
     <p class="note" id="pickHint" style="margin:-4px 0 8px;font-size:11px">
       点整行选中（可多选）→ 点右上「重试」重新拉这些指数的涨跌</p>
+    </div><!-- /stickTop -->
     <div id="list1"></div>
     <button class="add" id="add1">+ 添加指数</button>
     <p class="note">填「最低分位」即出金额：<b>（5 − 最低分位 + 当日跌幅）× 单位</b>。
@@ -416,7 +426,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-24d";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-25a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -483,6 +493,8 @@ let AH = { qivPost:null, qiv:null, fut:null, at:0, src:"" };
 let state = load();
 let quotes = {};
 let autoOn = true, onlyHit = false, onlyTodo = false, fillMode = false, prevAuto = true, prevSort = "order", monFilter = "all", tab = "s1";
+/* 填表模式下「只看待填」的行快照：填完的行不会立刻消失，避免列表跳动 */
+let todoSnapshot = null;
 const openPanels = new Set();   // ⚙ 展开的面板，重绘后保持打开
 let retrySegs  = new Set();   // 分位段选择（0-5/5-10/…/na）
 let onlyNaFilter = false;     // 「限无行情」：分位段与无行情取交集
@@ -552,7 +564,30 @@ function migrate(s){
 }
 function save(){ try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){} }
 const $ = s => document.querySelector(s);
-const num = v => (v===""||v===null||v===undefined||isNaN(Number(v))) ? null : Number(v);
+/* 把输入转成数字。除了常规的 Number()，还要吃掉常见的「手滑」：
+   · 中文逗号/句号当小数点（"3，05" → 3.05）
+   · 全角数字、全角负号、空格
+   · 结尾多余的 % 号
+   这样历史数据里存了「3，05」也不会算不出金额。 */
+const num = v => {
+  if(v===""||v===null||v===undefined) return null;
+  if(typeof v==="number") return isFinite(v) ? v : null;
+  let s=String(v).trim().replace(/%/g,"");
+  if(!s) return null;
+  s=s.replace(/[０-９]/g, c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0))
+     .replace(/[．。｡]/g, ".")
+     .replace(/[，、]/g, ",")
+     .replace(/[－−–—]/g, "-")
+     .replace(/\s+/g, "");
+  if(s.includes(",")){
+    if(/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(s)) s=s.replace(/,/g,"");
+    else s=s.replace(/,/g,".");
+  }
+  const i=s.indexOf(".");
+  if(i>=0) s=s.slice(0,i+1)+s.slice(i+1).replace(/\./g,"");
+  const n=Number(s);
+  return isNaN(n) ? null : n;
+};
 const fmt = (v,n=2) => (v===null||v===undefined||isNaN(v)) ? "—" : Number(v).toFixed(n);
 const isTHS = code => !/^(sh|sz)/i.test(code);
 
@@ -2360,7 +2395,11 @@ function renderSec1(){
   const rows=viewOrder().map(it=>({it:it, r:calcRow(it)}));
   let shown=rows;
   if(onlyHit) shown=shown.filter(x=>x.r.tag==="hit");
-  if(onlyTodo) shown=shown.filter(x=>isTodo(x.it));
+  // 「只看待填」：填表模式用快照（填完不消失），否则实时判断
+  if(onlyTodo){
+    if(fillMode && todoSnapshot) shown=shown.filter(x=>todoSnapshot.has(x.it.id));
+    else shown=shown.filter(x=>isTodo(x.it));
+  }
   $("#toggle1").textContent = onlyHit ? "显示全部" : "只看 <5";
   $("#toggle1").classList.toggle("on", onlyHit);
   const c=count1(), ce=$("#count1");
@@ -2648,9 +2687,16 @@ document.addEventListener("click", e=>{
   const delrow=e.target.closest("[data-delrow]");
   if(delrow){ askDelete(delrow.dataset.delrow, state.list1, "定投"); return; }
   // 点整行（非输入框/按钮/链接）切换选中；不再用行首圆圈，省出一列给名称
+  // ★ 填表模式下**不**由整行点击触发选中：那时用户是在连续填数字，
+  //   很容易误把行选成蓝色高亮（而且容易取消不掉）。
   const rrow=e.target.closest("#list1 .row[data-id]");
   if(rrow && rrow.closest("#pane-s1") && !e.target.closest("input,button,a,select,[data-diag]")){
     const id=rrow.dataset.id;
+    if(fillMode){
+      // 填表模式：只有点在「名称/代码」那一小块才切换选中，避免误触
+      const inName = e.target.closest(".nmcell");
+      if(!inName) return;
+    }
     if(pickSet.has(id)) pickSet.delete(id); else pickSet.add(id);
     rrow.classList.toggle("picked", pickSet.has(id) || segSel(state.list1.find(x=>x.id===id)||{}));
     updateRetryUI();
@@ -2788,9 +2834,73 @@ function coveredDay(ms){
 const WK=["周日","周一","周二","周三","周四","周五","周六"];
 function numMs(v){ return (typeof v==="number")?v:new Date(String(v).slice(0,10)+"T00:00:00").getTime(); }
 
+/* 分位/涨跌等数字框：聚焦时全选内容，方便直接覆盖输入。
+   ★ 用 focusin + 微延时：手机上 touch 后浏览器还会把光标挪到点击位置，
+     立刻 select() 会被覆盖，延时 0~30ms 后再选一次才生效。 */
+document.addEventListener("focusin", e=>{
+  const t=e.target;
+  if(!t || t.tagName!=="INPUT") return;
+  const k=t.dataset && t.dataset.k;
+  if(!k) return;
+  if(!["min","pe","pb","unit","mpct","mpct2","mpct3","high","manual","startDate"].includes(k)) return;
+  if(t.value==="") return;
+  const doSel=()=>{ try{ t.select(); t.setSelectionRange(0, t.value.length); }catch(err){} };
+  doSel();
+  setTimeout(doSel, 30);
+  setTimeout(doSel, 120);
+});
+/* 鼠标点击（非触摸）也全选：某些浏览器 focusin 时点选位置仍会生效 */
+document.addEventListener("mouseup", e=>{
+  const t=e.target;
+  if(!t || t.tagName!=="INPUT" || t.value==="") return;
+  const k=t.dataset && t.dataset.k;
+  if(k && ["min","pe","pb","unit","mpct","mpct2","mpct3","high","manual","startDate"].includes(k)){
+    requestAnimationFrame(()=>{ try{ t.select(); }catch(err){} });
+  }
+});
+
+/* 数字输入归一化：把中文逗号/句号、全角数字、空格等统一成半角。
+   ★ 常见踩坑：把小数点打成「，」(中文逗号) 或「。」，导致 Number() = NaN 算不出金额。
+   注意：只处理「跟在数字中间」的逗号（当作小数点），不当千分位。
+      "3，05" → "3.05"      "1,4" → "1.4"
+      "1,234" → "1234"（三位一组当千分位）
+      "３.５" → "3.5"（全角转半角） */
+function normNum(v){
+  if(v===null || v===undefined) return "";
+  let s=String(v);
+  // 全角数字/符号 → 半角
+  s=s.replace(/[０-９]/g, c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0))
+     .replace(/[．。｡]/g, ".")
+     .replace(/[，、]/g, ",")
+     .replace(/[－−–—]/g, "-")
+     .replace(/\s+/g, "");
+  // 逗号：三位一组且后面还有3位的当千分位去掉；否则当小数点
+  if(s.includes(",")){
+    if(/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(s)) s=s.replace(/,/g,"");
+    else s=s.replace(/,/g,".");
+  }
+  // 多个小数点 → 只留第一个
+  const i=s.indexOf(".");
+  if(i>=0) s=s.slice(0,i+1)+s.slice(i+1).replace(/\./g,"");
+  return s;
+}
+/* 输入框实时归一化（失焦时也做一次，避免打字过程中光标乱跳） */
+function normalizeInput(inp){
+  if(!inp || inp.tagName!=="INPUT") return;
+  const v=inp.value;
+  const nv=normNum(v);
+  if(nv!==v && /[，、。．,０-９\s－]/.test(v)) inp.value=nv;
+}
+
 document.addEventListener("input", e=>{
   const inp=e.target;
   if(!inp.dataset || !inp.dataset.k) return;
+  // 数字类字段：把中文标点换成半角（这样「3，05」也能算）
+  const NUMK=["min","pe","pb","unit","mpct","mpct2","mpct3","high","manual"];
+  if(NUMK.includes(inp.dataset.k)){
+    const nv=normNum(inp.value);
+    if(nv!==inp.value) inp.value=nv;
+  }
   const it=[...state.list1,...state.list2,...state.list3].find(x=>x.id===inp.dataset.id);
   if(!it) return;
   // 「分位」框里如果是程序自动填进去的（韭圈儿值），用户没改之前不要当成手填值写入
@@ -3761,7 +3871,11 @@ document.addEventListener("change", e=>{
     save(); render(); scheduleCloudPush();
   }
 });
-$("#fTodo").onclick=()=>{ onlyTodo=!onlyTodo; updateFilters1(); render(); };
+$("#fTodo").onclick=()=>{
+  onlyTodo=!onlyTodo;
+  if(onlyTodo) todoSnapshot=null;    // 手动开启时重新生成快照
+  updateFilters1(); render();
+};
 $("#fExpandAll").onclick=()=>{
   const allOpen = state.list1.length>0 && state.list1.every(it=>openPanels.has(it.id));
   if(allOpen) openPanels.clear();
@@ -3773,13 +3887,33 @@ $("#fFill").onclick=()=>{
   if(fillMode){
     prevAuto=autoOn; prevSort=state.sort||"order";
     autoOn=false; onlyTodo=true;
+    // ★ 快照当前「待填」的行：填完一行后它不会立刻从列表消失，
+    //   否则填一行动一下、序号全变，很难受。
+    todoSnapshot = new Set(state.list1.filter(it=>isTodo(it)).map(it=>it.id));
   }else{
     autoOn=prevAuto; onlyTodo=false; state.sort=prevSort;
+    todoSnapshot=null;
     $("#btnAuto").textContent="自动刷新："+(autoOn?"盘中":"关");
   }
   const rs=$("#retrySegs"), rp=$("#retryPickRow");
   if(rs) rs.style.display = fillMode ? "none" : "flex";   // 填表时重试工具收起来
   if(rp) rp.style.display = fillMode ? "none" : "flex";
+  // 填表模式下给一个「取消选中」按钮（不然选中了就取消不掉）
+  let fb=$("#btnFillUnpick");
+  if(fillMode){
+    if(!fb){
+      fb=document.createElement("button");
+      fb.id="btnFillUnpick";
+      fb.textContent="取消选中";
+      fb.title="清掉当前所有选中（填表模式下整行点击仍会选中，用这个一键取消）";
+      fb.onclick=()=>{ pickSet.clear(); retrySegs.clear(); updateRetryUI(); render(); };
+      const cnt=$("#count1");
+      if(cnt && cnt.parentNode) cnt.parentNode.insertBefore(fb, cnt);
+    }
+    fb.style.display="";
+  }else if(fb){
+    fb.style.display="none";
+  }
   save(); updateFilters1(); render(); updateRetryUI();
 };
 $("#btnRefresh").onclick=async ()=>{
@@ -3847,6 +3981,46 @@ $("#btnReset").onclick=()=>{
   localStorage.removeItem(KEY); state=load(); if(!state.sort) state.sort="order"; quotes={}; save(); render(); refreshQuotes();
 };
 $("#btnAuto").onclick=()=>{ autoOn=!autoOn; $("#btnAuto").textContent="自动刷新："+(autoOn?"盘中":"关"); };
+/* 复制文本：多种兜底，确保一定能复制到
+   1) navigator.clipboard.writeText（需 https + 用户手势）
+   2) document.execCommand("copy") + 临时 textarea（老旧/受限环境）
+   3) 都失败 → 弹出一个可选中的文本框，让用户手动复制
+   ★ 之前只有第 1 种，失败时 catch 里只 alert 了文本但没写进剪贴板，
+     用户看到"已复制"却粘贴不出东西。 */
+async function copyText(text){
+  // ① 现代 API
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    try{ await navigator.clipboard.writeText(text); return true; }catch(e){}
+  }
+  // ② execCommand 兜底
+  try{
+    const ta=document.createElement("textarea");
+    ta.value=text;
+    ta.setAttribute("readonly","");
+    ta.style.cssText="position:fixed;left:-9999px;top:0;opacity:0";
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok=document.execCommand("copy");
+    document.body.removeChild(ta);
+    if(ok) return true;
+  }catch(e){}
+  // ③ 都不行 → 弹框让用户手动复制
+  try{
+    const w=window.open("", "_blank", "width=420,height=520");
+    if(w){
+      w.document.write(`<meta charset="utf-8"><title>复制这段文字</title>
+<style>body{font:13px/1.7 system-ui;padding:12px;background:#0f1724;color:#e2e8f0}
+textarea{width:100%;height:70vh;background:#0b1220;color:#e2e8f0;border:1px solid #26334a;border-radius:8px;padding:8px;font:13px/1.6 ui-monospace,monospace}
+button{margin-top:8px;padding:8px 16px;border-radius:8px;border:0;background:#38bdf8;color:#00121f;font-weight:600}</style>
+<textarea id="t"></textarea><br><button onclick="document.getElementById('t').select();document.execCommand('copy');this.textContent='已复制 ✓'">全选并复制</button>`);
+      const t=w.document.getElementById("t");
+      t.value=text; t.focus(); t.select();
+      return true;
+    }
+  }catch(e){}
+  return false;
+}
 $("#btnCopy").onclick=async ()=>{
   const L=["定投 "+new Date().toLocaleString("zh-CN")];
   state.list1.forEach(it=>{
@@ -3857,8 +4031,10 @@ $("#btnCopy").onclick=async ()=>{
   state.list2.forEach(it=>{const r=calc2(it); if(r.amount>0) L.push(`【回撤】${it.name} 回撤${fmt(r.dd,1)}% 系数${r.coef} → ¥${r.amount}`);});
   const nearTxt=$("#near1")&&$("#near1").textContent;
   L.push(`合计：定投 ${$("#sum1").textContent}${nearTxt?`（${nearTxt}）`:""}，回撤 ${$("#sum2").textContent}`);
-  try{ await navigator.clipboard.writeText(L.join("\n")); alert("已复制"); }
-  catch(e){ alert(L.join("\n")); }
+  const text=L.join("\n");
+  const ok=await copyText(text);
+  if(ok) alert("已复制");
+  // copyText 内部已给出可手动复制的窗口，这里不再重复弹 alert
 };
 
 /* ---------- 时钟 ---------- */
@@ -3887,6 +4063,22 @@ function tick(){
   cd.style.color=color;
 }
 setInterval(tick,1000); tick();
+
+/* 吸顶操作区要贴在 header 下方，而 header 高度会随换行变化（手机端更明显）。
+   用 ResizeObserver 实测并写进 CSS 变量 --hdr-h。 */
+function syncHdrHeight(){
+  const h=document.querySelector("header");
+  if(!h) return;
+  const px=Math.round(h.getBoundingClientRect().height);
+  document.documentElement.style.setProperty("--hdr-h", px+"px");
+}
+try{
+  const h=document.querySelector("header");
+  if(h && typeof ResizeObserver==="function") new ResizeObserver(syncHdrHeight).observe(h);
+  syncHdrHeight();
+  window.addEventListener("resize", syncHdrHeight);
+  window.addEventListener("orientationchange", ()=>setTimeout(syncHdrHeight, 300));
+}catch(e){}
 
 $("#diagClose").onclick=()=>dlgDiag.close();
 /* 「用代理数据写入」：诊断明明拿到了，页面却是无行情时，一键把它写进去 */
