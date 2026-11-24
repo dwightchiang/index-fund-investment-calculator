@@ -97,10 +97,12 @@ setTimeout(() => {
   // ===== 问题 6：复制 =====
   console.log("\n── 问题6：复制有兜底 ──");
   check("copyText 已定义", vm.runInContext("typeof copyText", sandbox), "function");
-  check("copyText 里有多重兜底（execCommand）",
+  check("copyText 里有 execCommand 兜底",
         /execCommand/.test(vm.runInContext("copyText.toString()", sandbox)), true);
-  check("copyText 里有手动复制窗口兜底",
-        /window\.open/.test(vm.runInContext("copyText.toString()", sandbox)), true);
+  check("有 showCopyPanel（手动复制面板）",
+        vm.runInContext("typeof showCopyPanel", sandbox), "function");
+  check("复制后总会弹面板（不靠返回值判断）",
+        html.includes("showCopyPanel(text)"), true);
 
   // ===== 问题 1：吸顶 =====
   console.log("\n── 问题1：吸顶区 ──");
@@ -108,10 +110,13 @@ setTimeout(() => {
   check("有 .stickTop 样式", /\.stickTop\{/.test(html), true);
   check("有 syncHdrHeight 函数", vm.runInContext("typeof syncHdrHeight", sandbox), "function");
 
-  // ===== 问题 2：聚焦全选 =====
-  console.log("\n── 问题2：点输入框全选 ──");
-  check("有 focusin 全选逻辑", html.includes('addEventListener("focusin"'), true);
-  check("有 mouseup 全选逻辑", html.includes('addEventListener("mouseup"'), true);
+  // ===== 问题 2：输入框不该强制全选 =====
+  console.log("\n── 问题2：点输入框保持光标位置（不全选）──");
+  check("有 lastPointerDown 记录", html.includes("lastPointerDown"), true);
+  check("focusin 里会判断最近是否有指针按下",
+        /Date\.now\(\)-lastPointerDown/.test(html), true);
+  check("已移除无条件 mouseup 全选",
+        !/addEventListener\("mouseup", e=>\{[\s\S]{0,400}t\.select\(\)/.test(html), true);
 
   // ===== 问题 3/5：填表快照 + 取消选中 =====
   console.log("\n── 问题3/5：填表模式 ──");
