@@ -311,14 +311,13 @@ export default {
     /* ---------- QIV：纳斯达克100 盘后指标 ----------
        官方站没有 CORS，浏览器直连拿不到，必须走这里。
        页面 HTML 里直接带现成的值：
-         data-current-value="25,383.49"
-         data-numerical-change="-1,133.56"
-         id="pctChange" > -4.27%
-         DATA AS OF 11/20/2026
-       QIV 是「把盘后交易也算进去的纳指100」，所以：
-         QIV% = 当日涨跌（含盘后）
-         盘后涨跌 = QIV% − NDX 当日涨跌%
-       这里只返回 QIV 原始三值，NDX 当日涨跌由页面/脚本另取。 */
+         data-current-value="26,735.49"      ← QIV 指数值（含盘后）
+         data-numerical-change="1,706.51"    ← 相对前一日收盘的当日涨跌（点数）
+         id="pctChange" > 0.00%              ← ★ 这个字段是假的，恒为 0，别用
+         DATA AS OF 11/23/2026
+
+       用法：盘后涨跌 = qiv / NDX当日收盘 − 1
+       （因为 QIV − change = 前一日收盘，QIV 本身就是含盘后的当日指数值） */
     if (path === "/qiv") {
       const t0 = Date.now();
       try {
@@ -335,9 +334,9 @@ export default {
         if (!cur) throw new Error("qiv-parse");
         const num = (s) => (s === undefined || s === null) ? null : Number(String(s).replace(/,/g, ""));
         const out = {
-          qiv: num(cur[1]),
-          change: chg ? num(chg[1]) : null,
-          pct: pct ? Number(pct[1]) : null,
+          qiv: num(cur[1]),                 // ★ 主力字段：指数值（含盘后）
+          change: chg ? num(chg[1]) : null, // 相对前一日收盘的涨跌点数
+          pct: pct ? Number(pct[1]) : null, // 已知不可靠（常为 0），仅保留
           date: dt ? dt[1] : "",
           ms: Date.now() - t0,
         };

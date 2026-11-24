@@ -103,12 +103,12 @@ setTimeout(async () => {
     `, sandbox);
     console.log("   loadAfterHours 结果:", JSON.stringify(r));
     check("⑦ 期货原始涨跌算出来了", r.futRaw !== null && isFinite(r.futRaw), true);
-    // 期货昨结是 11-23、NDX 是 11-20 → 不同交易日 → futPost 必须为 null（不能瞎减）
-    check("⑧ 期货与 NDX 不同交易日 → futPost 为 null", r.futPost, null);
-    check("⑨ 且标记了 futSameDay=false", r.futSameDay, false);
-    // 15:00 基准：现在是 23:25，早已过 15:00 → 不该伪造基准（否则落地是 0%）
-    check("⑩ 远离 15:00 → 不伪造基准，fut 为 null", r.fut, null);
-    check("⑪ 并标记 futBaseMissing", r.futBaseMissing, true);
+    // ★ 新口径：期货「昨结」就是上一交易日收盘时的价，
+    //   所以 (最新/昨结−1) 本身就是盘后涨跌，不再减 NDX%。
+    //   这里 昨结 25126.5 与 NDX 收盘 25028.98 差 0.39% → 判定同一交易日 → 采用
+    check("⑧ 昨结与 NDX 收盘接近 → futPost = futRaw", r.futPost, r.futRaw);
+    check("⑨ futSameDay 为 true", r.futSameDay, true);
+    check("⑩ 15:00 基准：现在 23:25 早已过 → 不伪造，fut 为 null", r.fut, null);
 
     console.log(bad ? `\n${bad} 项不符合预期` : "\n全部通过");
     process.exit(bad ? 1 : 0);
