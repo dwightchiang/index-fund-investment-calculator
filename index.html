@@ -105,7 +105,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-25b 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-25c 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -426,7 +426,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-25b";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-25c";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -2687,16 +2687,11 @@ document.addEventListener("click", e=>{
   const delrow=e.target.closest("[data-delrow]");
   if(delrow){ askDelete(delrow.dataset.delrow, state.list1, "定投"); return; }
   // 点整行（非输入框/按钮/链接）切换选中；不再用行首圆圈，省出一列给名称
-  // ★ 填表模式下**不**由整行点击触发选中：那时用户是在连续填数字，
-  //   很容易误把行选成蓝色高亮（而且容易取消不掉）。
+  // ★ suppressRowClick：这次交互是「拖选文字」或「处理输入框」→ 不要选行
   const rrow=e.target.closest("#list1 .row[data-id]");
-  if(rrow && rrow.closest("#pane-s1") && !e.target.closest("input,button,a,select,[data-diag]")){
+  if(rrow && rrow.closest("#pane-s1") && !suppressRowClick
+     && !e.target.closest("input,button,a,select,[data-diag]")){
     const id=rrow.dataset.id;
-    if(fillMode){
-      // 填表模式：只有点在「名称/代码」那一小块才切换选中，避免误触
-      const inName = e.target.closest(".nmcell");
-      if(!inName) return;
-    }
     if(pickSet.has(id)) pickSet.delete(id); else pickSet.add(id);
     rrow.classList.toggle("picked", pickSet.has(id) || segSel(state.list1.find(x=>x.id===id)||{}));
     updateRetryUI();
@@ -2846,25 +2841,140 @@ function coveredDay(ms){
 const WK=["周日","周一","周二","周三","周四","周五","周六"];
 function numMs(v){ return (typeof v==="number")?v:new Date(String(v).slice(0,10)+"T00:00:00").getTime(); }
 
-/* 数字框聚焦时：**不强制全选**（那样没法只改某一位，比如 1.26 → 1.28）。
-   只有用 Tab/回车进入（没有鼠标点击）时才全选，方便整格覆盖；
-   鼠标/手指点进来则保持光标在点击位置，可以单独改某一位。
-   ★ 上一版无条件 select() + 延时重选，导致点进去就全选、只能整格重输。 */
-let lastPointerDown = 0;
-document.addEventListener("mousedown", ()=>{ lastPointerDown = Date.now(); }, true);
-document.addEventListener("touchstart", ()=>{ lastPointerDown = Date.now(); }, true);
+/* 拖拽选择文字的检测：从按下到松手之间如果移动了（或产生了文本选区），
+   就认为用户是在"拖选文字"，这时不要把行选成蓝色。
+   ★ 场景：从右往左拖选数字，松手落在行尾空白处 →
+     旧逻辑会把它当成"点了这一行"，整行变蓝。 */
+/* ===== 拖选文字 vs 点击行 =====
+   ★ 问题：从右往左拖选数字，松手落在行的空白处，
+     click 的 target 是那一行 → 旧逻辑把整行选成蓝色。
+   ★ 解法：记录「按下时」的位置和元素。
+     · 按下点在 input / 文字上 → 这是一次拖选，绝不当成点击选中行
+     · 按下点和松开点之间移动超过 5px → 也算拖选
+   二者任一成立，就跳过"点击整行切换选中"。 */
+let downX=0, downY=0, downOnInput=false, downMoved=false, downValid=false, dragResetTimer=null;
+let suppressRowClick = false;
 
+function dragReset(delay){
+  clearTimeout(dragResetTimer);
+  dragResetTimer = setTimeout(()=>{
+    downValid=false; downMoved=false; downOnInput=false;
+    suppressRowClick=false;
+  }, delay||250);
+}
+document.addEventListener("mousedown", e=>{
+  const t=e.target;
+  downValid=true; downMoved=false;
+  downX=e.clientX; downY=e.clientY;
+  // 按下点是否在输入框 / 可选中文字上
+  downOnInput = !!(t && (t.tagName==="INPUT" || t.tagName==="TEXTAREA"
+                    || (t.closest && t.closest("input,textarea"))));
+  suppressRowClick=false;
+  clearTimeout(dragResetTimer);
+}, true);
+
+document.addEventListener("mousemove", e=>{
+  if(!downValid) return;
+  if(Math.abs(e.clientX-downX) > 5 || Math.abs(e.clientY-downY) > 5){
+    downMoved = true;
+    suppressRowClick = true;      // 移动过 → 是拖选，不是点击
+  }
+}, true);
+
+document.addEventListener("mouseup", ()=>{
+  // 按下点在输入框上 → 即使没移动也算"处理输入框"，不该选行
+  if(downOnInput) suppressRowClick = true;
+  dragReset(300);
+}, true);
+
+/* 触摸：同理 */
+document.addEventListener("touchstart", e=>{
+  const t=e.target, p=e.touches && e.touches[0];
+  downValid=true; downMoved=false;
+  if(p){ downX=p.clientX; downY=p.clientY; }
+  downOnInput = !!(t && (t.tagName==="INPUT" || t.tagName==="TEXTAREA"
+                    || (t.closest && t.closest("input,textarea"))));
+  suppressRowClick=false;
+  clearTimeout(dragResetTimer);
+}, {capture:true, passive:true});
+
+document.addEventListener("touchmove", e=>{
+  const p=e.touches && e.touches[0];
+  if(!downValid || !p) return;
+  if(Math.abs(p.clientX-downX) > 8 || Math.abs(p.clientY-downY) > 8){
+    downMoved = true; suppressRowClick = true;
+  }
+}, {capture:true, passive:true});
+
+document.addEventListener("touchend", ()=>{
+  if(downOnInput) suppressRowClick = true;
+  dragReset(350);
+}, true);
+
+/* 数字框的选中行为（按用户要求）：
+     · 点击输入框 → **默认全选**（方便直接覆盖输入）
+     · 再点一次（已在焦点内）→ **取消全选**，光标落在点击位置，可单独改某一位
+     · Tab / 回车进入 → 全选
+   实现：focusin 时全选；mousedown 时如果这个框**已经聚焦**，就放行浏览器默认行为
+        （取消选区、按点击位置放光标）。 */
+const NUM_KEYS = ["min","pe","pb","unit","mpct","mpct2","mpct3","high","manual","startDate"];
+
+/* ① 第一次进入（还没聚焦）→ 全选
+   用 mousedown 捕获阶段做，比 focusin 更早、能压住浏览器默认的"放光标"行为 */
+document.addEventListener("mousedown", e=>{
+  const t=e.target;
+  if(!t || t.tagName!=="INPUT") return;
+  const k=t.dataset && t.dataset.k;
+  if(!k || !NUM_KEYS.includes(k)) return;
+  if(t.value==="") return;
+  if(document.activeElement===t) return;      // 已聚焦 → 交给下面的"再点取消"
+  // 阻止默认（默认会把光标放到点击位置），改成全选
+  e.preventDefault();
+  t.focus();
+  try{ t.select(); }catch(err){}
+}, true);
+
+/* 键盘进入（Tab/回车）→ 全选 */
 document.addEventListener("focusin", e=>{
   const t=e.target;
   if(!t || t.tagName!=="INPUT") return;
   const k=t.dataset && t.dataset.k;
-  if(!k) return;
-  if(!["min","pe","pb","unit","mpct","mpct2","mpct3","high","manual","startDate"].includes(k)) return;
+  if(!k || !NUM_KEYS.includes(k)) return;
   if(t.value==="") return;
-  // 刚刚有过鼠标/触摸按下 → 用户是点在特定位置，别抢光标
-  if(Date.now()-lastPointerDown < 400) return;
-  // 键盘进入（Tab / 回车）→ 全选，方便直接覆盖
+  if(t.selectionStart!==t.selectionEnd) return;   // 已经全选好了（上面 mousedown 做的）
   try{ t.select(); }catch(err){}
+});
+
+/* ② 已经聚焦的输入框被再次点击 → 取消全选，光标落到点击处那个字符位置 */
+document.addEventListener("mousedown", e=>{
+  const t=e.target;
+  if(!t || t.tagName!=="INPUT") return;
+  const k=t.dataset && t.dataset.k;
+  if(!k || !NUM_KEYS.includes(k)) return;
+  if(document.activeElement!==t) return;      // 还没聚焦 → 上面那个处理器负责
+  const hasSel = t.selectionStart!==t.selectionEnd;
+  if(!hasSel) return;                          // 本来就没选中 → 正常放光标
+  const rect = t.getBoundingClientRect();
+  const cx = (e.clientX!==undefined && e.clientX!==0) ? e.clientX
+           : (e.touches&&e.touches[0] ? e.touches[0].clientX : rect.left);
+  const x = cx - rect.left;
+  const padL = 6, padR = 6;
+  const usable = Math.max(1, rect.width - padL - padR);
+  const v = t.value;
+  let idx = v.length;
+  try{
+    const cs = getComputedStyle(t);
+    const cv = document.createElement("canvas").getContext("2d");
+    cv.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    const fullW = cv.measureText(v).width || usable;
+    idx = Math.round((x - padL) / Math.max(1, fullW) * v.length);
+    idx = Math.max(0, Math.min(v.length, idx));
+  }catch(err){
+    idx = x > usable/2 ? v.length : 0;
+  }
+  requestAnimationFrame(()=>{
+    try{ t.setSelectionRange(idx, idx); }catch(err){}
+  });
 });
 
 /* 数字输入归一化：把中文逗号/句号、全角数字、空格等统一成半角。

@@ -110,13 +110,17 @@ setTimeout(() => {
   check("有 .stickTop 样式", /\.stickTop\{/.test(html), true);
   check("有 syncHdrHeight 函数", vm.runInContext("typeof syncHdrHeight", sandbox), "function");
 
-  // ===== 问题 2：输入框不该强制全选 =====
-  console.log("\n── 问题2：点输入框保持光标位置（不全选）──");
-  check("有 lastPointerDown 记录", html.includes("lastPointerDown"), true);
-  check("focusin 里会判断最近是否有指针按下",
-        /Date\.now\(\)-lastPointerDown/.test(html), true);
-  check("已移除无条件 mouseup 全选",
-        !/addEventListener\("mouseup", e=>\{[\s\S]{0,400}t\.select\(\)/.test(html), true);
+  // ===== 问题 2：输入框点击 = 全选，再点 = 取消全选 =====
+  console.log("\n── 问题2：点一次全选、再点取消（详见 test_input_select.js）──");
+  check("有 NUM_KEYS 常量", html.includes("const NUM_KEYS"), true);
+  check("首次 mousedown 会 preventDefault 再 select",
+        /e\.preventDefault\(\);[\s\S]{0,120}t\.select\(\)/.test(html), true);
+  check("已聚焦时再点 → 取消全选（收成点）",
+        /document\.activeElement!==t\) return/.test(html) &&
+        /hasSel/.test(html) &&
+        /setSelectionRange\(idx, idx\)/.test(html), true);
+  check("已移除旧的 lastPointerDown 方案",
+        !html.includes("lastPointerDown"), true);
 
   // ===== 问题 3/5：填表快照 + 取消选中 =====
   console.log("\n── 问题3/5：填表模式 ──");
