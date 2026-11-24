@@ -98,7 +98,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-24c 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-24d 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -416,7 +416,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-24c";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-24d";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1869,23 +1869,29 @@ function closeMs(day){
   if(!day || day.length<8) return 0;
   return new Date(+day.slice(0,4), +day.slice(4,6)-1, +day.slice(6,8), 15, 0, 0).getTime();
 }
+/* 「这一行的分位填得够不够新」的分界线（毫秒）。
+   ★ 关键：分位是日频数据，判断基准应该是「最近一个交易日收盘」，
+     而不是「行情表里最新那条的日期」——行情可能还停在上一交易日，
+     导致上周五填的分位被误判成"新鲜"。
+   规则：
+     · 15:00 前 → 需要「上一工作日」收盘后填的
+     · 15:00 后 → 需要「今天」收盘后填的
+     · 周末 → 需要「上周五」收盘后填的
+   不看 quotes 里的日期，避免行情滞后影响判断。 */
 function fillBoundaryMs(now){
   now = now || new Date();
-  const dates=[...new Set(Object.values(quotes).filter(q=>q&&q.date).map(q=>q.date))].sort();
-  const today=ymd(now);
-  const beforeOpen = now.getHours()*100+now.getMinutes() < 1500;
-  const latest = dates.length ? dates[dates.length-1] : "";
-  if(latest===today && beforeOpen){
-    const prev=dates.filter(x=>x<today).pop();
-    if(prev) return closeMs(prev);
-    const d=new Date(now); d.setDate(d.getDate()-1);   // 行情里还没有更早的记录 → 按工作日推
-    while(d.getDay()===0||d.getDay()===6) d.setDate(d.getDate()-1);
-    return closeMs(ymd(d));
+  const d = new Date(now);
+  const hm = d.getHours()*100 + d.getMinutes();
+  const dow = d.getDay();
+  if(dow === 0){                                   // 周日 → 要上周五的
+    d.setDate(d.getDate()-2);
+  }else if(dow === 6){                             // 周六 → 要周五的
+    d.setDate(d.getDate()-1);
+  }else if(hm < 1500){                             // 工作日 15:00 前 → 要上一工作日
+    d.setDate(d.getDate()-1);
+    while(d.getDay()===0 || d.getDay()===6) d.setDate(d.getDate()-1);
   }
-  if(latest===today) return closeMs(today);            // 已过 15:00，下一阶段用今天收盘后的数据
-  if(latest) return closeMs(latest);                   // 今天休市（周末/假期）
-  const d=new Date(now); d.setDate(d.getDate()-1);     // 完全没有行情 → 退化为上一工作日
-  while(d.getDay()===0||d.getDay()===6) d.setDate(d.getDate()-1);
+  // 工作日 15:00 后 → 就是今天
   return closeMs(ymd(d));
 }
 function fillFresh(it, now){
@@ -2964,7 +2970,7 @@ function doBulk(target){
       if(bucket===state.list1) newCodes.unshift(code);   // 批量导入的也放最上面（保持输入顺序）
     }
     it.rev=Date.now();
-    if(pe!==undefined && pe!=="-"){ if(bucket===state.list1) it.min=pe; else it.pe=pe; }
+    if(pe!==undefined && pe!=="-"){ if(bucket===state.list1){ it.min=pe; it.minAt=Date.now(); } else it.pe=pe; }
     if(pb!==undefined && pb!=="-") it.pb=pb;
   });
   if(newCodes.length){
