@@ -85,12 +85,14 @@ setTimeout(() => {
   check("⑥ 周一~周五算交易日", [1,2,3,4,5].every(isTradingDay), true);
   check("⑦ 周六日不算", [0,6].every(d=>!isTradingDay(d)), true);
 
-  // 时间点判断
-  const shouldPull = (dow, hm) => isTradingDay(dow) && hm >= 1130;
-  check("⑧ 周二 11:29 → 不拉", shouldPull(2, 1129), false);
-  check("⑨ 周二 11:30 → 拉", shouldPull(2, 1130), true);
-  check("⑩ 周二 15:00 → 还会拉（当天没拉过）", shouldPull(2, 1500), true);
-  check("⑪ 周六 11:30 → 不拉", shouldPull(6, 1130), false);
+  // 时间点判断（11:30 后 + 当天没拉过）
+  const shouldPull = (dow, hm, pulledToday) =>
+    isTradingDay(dow) && hm >= 1130 && !pulledToday;
+  check("⑧ 周二 11:29 → 不拉", shouldPull(2, 1129, false), false);
+  check("⑨ 周二 11:30 → 拉", shouldPull(2, 1130, false), true);
+  check("⑩ 周二 11:30 已拉过 → 不再拉（一天一次）", shouldPull(2, 1130, true), false);
+  check("⑪ 周二 15:00 已拉过 → 不再拉", shouldPull(2, 1500, true), false);
+  check("⑫ 周六 11:30 → 不拉", shouldPull(6, 1130, false), false);
 
   console.log(bad ? `\n${bad} 项不符合预期` : "\n全部通过");
   process.exit(bad ? 1 : 0);

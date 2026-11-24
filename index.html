@@ -98,7 +98,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-23i 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-24a 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -416,7 +416,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-23i";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-24a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1397,49 +1397,49 @@ async function loadAfterHours(force){
   // ② 期货（新浪 hf_NQ，JSONP）→ 同样减 NDX%，与 QIV 严格同口径
   {
     try{
-      const txt = await loadScriptText("https://hq.sinajs.cn/list=hf_NQ", 8000, "gbk");
+      // ★ 显式传变量名：新浪只给 hq_str_hf_NQ，别让加载器去猜
+      const txt = await loadScriptText("https://hq.sinajs.cn/list=hf_NQ&_="+Date.now(),
+                                       8000, "gbk", "hq_str_hf_NQ");
       const m = /hq_str_hf_NQ="([^"]*)"/.exec(txt);
-      if(m){
-        const p = m[1].split(",");
-        const last = parseFloat(p[0]), prev = parseFloat(p[7]);
-        if(isFinite(last) && isFinite(prev) && prev){
-          AH.futPrice = last;
-          AH.futTime = p[6] || "";
-          // 基准：北京时间 15:00 的点位（15:00 前买入按当日净值，所以以它为参照）
-          let base = getFutBase();
-          if(base){
-            AH.futBaseLate = false;
+      if(!m) throw new Error("期货解析失败");
+      const p = m[1].split(",");
+      const last = parseFloat(p[0]), prev = parseFloat(p[7]);
+      if(isFinite(last) && isFinite(prev) && prev){
+        AH.futPrice = last;
+        AH.futTime = p[6] || "";
+        // 基准：北京时间 15:00 的点位（15:00 前买入按当日净值，所以以它为参照）
+        let base = getFutBase();
+        if(base){
+          AH.futBaseLate = false;
+        }else{
+          // 当天还没有基准：
+          //  · 15:00 前后 15 分钟内 → 就用当前价当基准（正好在时点附近，合理）
+          //  · 已经晚了很多 → 不伪造基准，否则「15:00至今」落地就是 0%
+          const {hm} = bjYmdHm();
+          const near1500 = hm >= FUT_BASE_HHMM && hm <= FUT_BASE_HHMM+15;
+          if(near1500){
+            base = setFutBase(last);
+            AH.futBaseLate = true;
           }else{
-            // 当天还没有基准：
-            //  · 15:00 前后 15 分钟内 → 就用当前价当基准（正好在时点附近，合理）
-            //  · 已经晚了很多（比如晚上 23:00 才第一次打开）→ 不伪造基准，
-            //    否则「15:00至今」落地就是 0%，毫无意义
-            const {hm} = bjYmdHm();
-            const near1500 = hm >= FUT_BASE_HHMM && hm <= FUT_BASE_HHMM+15;
-            if(near1500){
-              base = setFutBase(last);
-              AH.futBaseLate = true;
-            }else{
-              AH.futBaseLate = false;
-              AH.futBaseMissing = true;
-            }
+            AH.futBaseLate = false;
+            AH.futBaseMissing = true;
           }
-          AH.futBase = base ? base.price : null;
-          AH.futBaseDate = base ? base.date : "";
-          AH.futBaseAt = base ? base.at : 0;
-          // 15:00 基准 → 现在的涨跌%（没有基准就为 null，不显示假的 0%）
-          AH.fut = (base && base.price) ? Math.round((last - base.price)/base.price*10000)/100 : null;
-          // 原来的「对昨结」涨跌（保留：用于跟 NDX% 相减做纯盘后对比）
-          AH.futRaw = Math.round((last-prev)/prev*10000)/100;
-          // 纯盘后口径（与 QIV 可比）：期货昨结% − NDX当日%
-          // ★ 日期校验：期货「昨结」每天切换，可能与 NDX 日线不是同一交易日。
-          //   同一天的期货涨跌和 NDX 当日涨跌量级应该接近；
-          //   差太多（>5 个点）说明基准不同日，不能相减。
-          const diff = Math.abs(AH.futRaw - (ndxPct===null||ndxPct===undefined ? AH.futRaw : ndxPct));
-          AH.futSameDay = (ndxPct!==null && ndxPct!==undefined && diff <= 5);
-          AH.futPost = AH.futSameDay ? Math.round((AH.futRaw - ndxPct)*100)/100 : null;
-          changed=true;
         }
+        AH.futBase = base ? base.price : null;
+        AH.futBaseDate = base ? base.date : "";
+        AH.futBaseAt = base ? base.at : 0;
+        // 15:00 基准 → 现在的涨跌%（没有基准就为 null，不显示假的 0%）
+        AH.fut = (base && base.price) ? Math.round((last - base.price)/base.price*10000)/100 : null;
+        // 「对昨结」涨跌（期货原始口径，含盘中）
+        AH.futRaw = Math.round((last-prev)/prev*10000)/100;
+        // 纯盘后口径（与 QIV 可比）：期货昨结% − NDX当日%
+        // ★ 日期校验：期货「昨结」每天切换，可能与 NDX 日线不是同一交易日。
+        //   同一天的期货涨跌和 NDX 当日涨跌量级应该接近；
+        //   差太多（>5 个点）说明基准不同日，不能相减。
+        const diff = Math.abs(AH.futRaw - (ndxPct===null||ndxPct===undefined ? AH.futRaw : ndxPct));
+        AH.futSameDay = (ndxPct!==null && ndxPct!==undefined && diff <= 5);
+        AH.futPost = AH.futSameDay ? Math.round((AH.futRaw - ndxPct)*100)/100 : null;
+        changed=true;
       }
     }catch(e){}
   }
@@ -3922,29 +3922,42 @@ setInterval(async ()=>{
   }
 }, 30*1000);
 
-/* ---------- 每个交易日 11:30 拉「前一交易日」的韭圈儿分位 ----------
-   为什么 11:30：韭圈儿约 10:00 更新前一日数据，11:30 已稳定（A股上午收盘）。
-   周末不动（美股周五收盘的数据周一才有新的），所以只在「周一到周五」跑。
-   判断依据用 localStorage 记当天是否已拉过；检查间隔 1 分钟（到点即触发，不用等很久）。 */
+/* ---------- 每个交易日 11:30 拉「前一交易日」的韭圈儿分位，当天只拉一次 ----------
+   规则（按用户要求）：
+     · 周一到周五，北京时间 11:30 之后
+     · 当天只拉一次（localStorage 记日期），拉过就不再拉
+     · 周末不拉
+   ★ 为什么不用「数据是否新鲜」当判据：
+     那会导致反复重试（韭圈儿更新有延迟，11:30 拉到的可能还是旧值），
+     反而把当天唯一一次机会浪费掉。用户要的是「每天一次」，就严格一天一次。
+     手动刷新（⚙ 里的「重新拉分位」/ 顶部刷新）仍可随时强制拉。 */
 const JC_DAILY_KEY = "dca-jc-daily-pull";
 const JC_DAILY_HHMM = 1130;
-setInterval(async ()=>{
+async function pullJiucaiDaily(force){
   const bj = bjNow();
-  const dow = bj.getDay();                 // 0=周日 6=周六
-  if(dow === 0 || dow === 6) return;       // 周末不拉
+  const dow = bj.getDay();                       // 0=周日 6=周六
+  if(dow === 0 || dow === 6) return false;       // 周末不拉
   const {ymd, hm} = bjYmdHm();
-  if(hm < JC_DAILY_HHMM) return;
+  if(!force && hm < JC_DAILY_HHMM) return false; // 11:30 前不拉
+
   let last="";
   try{ last = localStorage.getItem(JC_DAILY_KEY)||""; }catch(e){}
-  if(last === ymd) return;
+  if(!force && last === ymd) return false;       // 今天已拉过 → 不再拉
+
   try{
-    await loadJiucai(true);                // force 刷新
-    localStorage.setItem(JC_DAILY_KEY, ymd);
-    state.jcPulledAt = Date.now();         // 记下这次刷新时间（界面显示用）
+    await loadJiucai(true);                      // 强制从接口取
+    localStorage.setItem(JC_DAILY_KEY, ymd);     // 记「今天已拉」（无论成功与否）
+    state.jcPulledAt = Date.now();
     save(); render();
-    console.log("[每日11:30] 韭圈儿分位已刷新到", jiucaiDate({code:"NDX", jc:"NDX.GI"}) || "?");
-  }catch(e){}
-}, 60*1000);
+    const got = JC_ROWS.map(r=>`${r.name}=${jiucaiDate({code:r.code,jc:r.jc})||"?"}`).join(", ");
+    console.log(`[韭圈儿] ${ymd} 每日拉取完成：${got}`);
+    return true;
+  }catch(e){ return false; }
+}
+/* 每分钟检查一次：到 11:30 且当天没拉过 → 拉一次 */
+setInterval(()=>{ pullJiucaiDaily(false); }, 60*1000);
+/* 打开页面后 8 秒也检查一次（用户 11:30 后才打开时立刻生效） */
+setTimeout(()=>{ pullJiucaiDaily(false); }, 8000);
 // 切回页面/重新可见时立刻拉一次（手机上从后台切回来最常见）
 if(typeof document.addEventListener==="function"){
   document.addEventListener("visibilitychange", ()=>{
