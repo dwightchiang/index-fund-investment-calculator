@@ -85,19 +85,20 @@ setTimeout(() => {
   const order = vm.runInContext("state.order.join(',')", sandbox);
   check("① 自定义顺序也把 NDX 提前", order.split(",")[0], "NDX");
 
-  // ② state.last 兜底 → 显示 ✓ 而不是 ?
+  // ② 现在**不再**用 state.last 兜底！没填过、没有自动源 → 一律 ?
+  //    （之前那版用 state.last 兜底，导致「从没填过」的行也显示 ✓，是假数据）
   for (const c of ["164906","HS2083","KWEB","980017"]) {
     const b = vm.runInContext(`pctBadge(state.list1.find(x=>x.code==='${c}'))`, sandbox);
-    check(`② ${c} 显示 ✓`, b.includes("fb-ok") && b.includes("✓"), true);
+    check(`② ${c} 没填分位 → 显示 ?（不再假装 ✓）`, b.includes("fb-none"), true);
   }
   // 真正没数据的（886042 无 last）→ ?
   const b886 = vm.runInContext("pctBadge(state.list1.find(x=>x.code==='886042'))", sandbox);
   check("② 886042（无 last）显示 ?", b886.includes("fb-none"), true);
 
-  // ③ 待填口径一致：有 last 的不算待填
+  // ③ 待填口径：没填分位的一律算待填
   for (const c of ["164906","HS2083","KWEB","980017"]) {
     const t = vm.runInContext(`isTodo(state.list1.find(x=>x.code==='${c}'))`, sandbox);
-    check(`③ ${c} 不算待填`, t, false);
+    check(`③ ${c} 算待填`, t, true);
   }
   const t886 = vm.runInContext("isTodo(state.list1.find(x=>x.code==='886042'))", sandbox);
   check("③ 886042 算待填", t886, true);

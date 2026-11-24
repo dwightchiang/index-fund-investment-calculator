@@ -98,7 +98,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-24b 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-24c 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -416,7 +416,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-24b";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-24c";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1223,7 +1223,17 @@ function minPctOf(it){
   const v=[pe,pb].filter(x=>x!==null);
   return v.length?Math.min(...v):null;
 }
+/* 记住「这一行真正的分位来源」，供离线时兜底显示金额。
+   ★ 只记住有真实来源的（手填 / 蛋卷 / 韭圈儿），不要记住 state.last 自己 ——
+     否则会自我强化：effPct 回退到 last → remember 又写回 last，
+     导致「从没填过的行」也被当成有值。 */
 function remember(it){
+  const manual = num(it.pe)!==null || num(it.pb)!==null;
+  const jc = (JIUCAI.items||{})[it.code] || (JIUCAI.items||{})[it.jc||""] || {};
+  const a  = (AUTO.items||{})[it.code] || (AUTO.items||{})[txCode(it.code)] || {};
+  const hasJc = jc.pe_pct!==undefined && jc.pe_pct!==null;
+  const hasDe = a.pe_pct!==undefined && a.pe_pct!==null;
+  if(!manual && !hasJc && !hasDe) return;      // 没有任何真实来源 → 不要写 last
   const {pe,pb}=effPct(it);
   if(pe!==null||pb!==null) state.last[it.code]={pe,pb};
 }
@@ -1916,6 +1926,11 @@ function pctFresh(it, now){
   return false;                                  // 既没手填也没自动 → 待填
 }
 /* 徽标：只显示图标 ✓ / ! / ?，悬停显示「周X数据已更新（日期）」；手机上不被省略号吃掉 */
+/* 徽标：✓ 已填且新鲜 / ! 已填但过期 / ? 未填
+   ★ 不要用 state.last 兜底！
+     remember() 每次 render 都会把 effPct() 的结果写回 state.last，
+     而 effPct() 又会在没有来源时回退到 state.last —— 自我循环，
+     结果「从没填过分位的行」也会被写成有值，然后显示 ✓（假数据）。 */
 function pctBadge(it, now){
   if(it.min){
     const fresh=pctFresh(it, now);
@@ -1933,21 +1948,16 @@ function pctBadge(it, now){
     return fresh ? `<span class="fb fb-ok" title="蛋卷：${wk}数据已更新（${dd}）">✓</span>`
                  : `<span class="fb fb-stale" title="蛋卷：${wk}(${dd}) 的数据，需更新">!</span>`;
   }
-  // 蛋卷/韭圈儿都不覆盖、但以前记住过分位的（state.last）→ 也显示 ✓，别误判成未填
-  const L=(state.last||{})[it.code];
-  if(L && (L.pe!==null&&L.pe!==undefined || L.pb!==null&&L.pb!==undefined)){
-    return `<span class="fb fb-ok" title="上次记住的分位 PE=${L.pe??"—"} PB=${L.pb??"—"}">✓</span>`;
+  // 韭圈儿覆盖的（如纳斯达克100）且有数据 → ✓
+  if(it.formula==="jc20"){
+    const jd=jiucaiDate(it);
+    if(jd) return `<span class="fb fb-ok" title="韭圈儿 ${jd} · 十年分位">✓</span>`;
   }
+  // ★ 其余一律算「未填」——不再拿 state.last 冒充
   return `<span class="fb fb-none" title="未填分位">?</span>`;
 }
 function isTodo(it){
   if(it.formula==="jc20") return minPctOf(it)===null;   // 韭圈儿有分位就不算待填
-  // 蛋卷/韭圈儿都没覆盖、但有 state.last 记住的分位 → 不算待填（和徽标口径一致）
-  if(!it.min){
-    const L=(state.last||{})[it.code];
-    const hasAuto = autoYmdOf(it) !== "";
-    if(!hasAuto && L && (L.pe!==null&&L.pe!==undefined || L.pb!==null&&L.pb!==undefined)) return false;
-  }
   return !pctFresh(it);
 }
 function total_all(list){ return list.length; }
@@ -1971,6 +1981,29 @@ function ensureOrder(){
     state.order=state.order.filter(c=> seen.has(c) ? false : (seen.add(c), true));
   }
 }
+/* 一次性清理：state.last 被自我强化污染过（没有真实来源的行也被写了值）。
+   判据：该行既没手填、蛋卷也没有、韭圈儿也没有 → 从 last 里删掉。
+   这样「从没填过分位」的行会正确显示 ?（未填）。 */
+const LAST_CLEAN_VER = 1;
+function cleanupPollutedLast(){
+  if((state.lastCleanVer||0) >= LAST_CLEAN_VER) return;
+  let n=0;
+  [...state.list1, ...state.list3].forEach(it=>{
+    if(!it || !it.code) return;
+    const manual = num(it.pe)!==null || num(it.pb)!==null || (it.min!==undefined && it.min!=="");
+    const jc=(JIUCAI.items||{})[it.code]||(JIUCAI.items||{})[it.jc||""]||{};
+    const a=(AUTO.items||{})[it.code]||(AUTO.items||{})[txCode(it.code)]||{};
+    const hasJc = jc.pe_pct!==undefined && jc.pe_pct!==null;
+    const hasDe = a.pe_pct!==undefined && a.pe_pct!==null;
+    if(!manual && !hasJc && !hasDe && state.last && state.last[it.code]){
+      delete state.last[it.code]; n++;
+    }
+  });
+  state.lastCleanVer = LAST_CLEAN_VER;
+  save();
+  if(n) console.log(`[cleanup] 清掉 ${n} 条被污染的 state.last 记录`);
+}
+
 /* 一次性清理：v9 迁移曾把用户删掉的 SEED1 预置行硬补回清单（31 → 37）。
    ★ 判据必须极其保守，宁可少删也绝不能误删用户的行 ★
    必须同时满足以下全部条件才删：
@@ -3915,8 +3948,11 @@ syncAHBtn();                                  // 「盘后加减」开关
 cloudSetStatus();
 restoreQuoteTime();
 render();
-loadPercentiles().then(()=>render());
-loadJiucai().then(ok=>{ if(ok) render(); });   // 韭圈儿十年分位（纳斯达克100 等）
+// 先清掉被污染的 state.last（必须在两个分位源加载之后才知道谁真有数据）
+Promise.all([loadPercentiles(), loadJiucai()]).then(()=>{
+  cleanupPollutedLast();
+  render();
+});
 // 盘后涨跌（QIV 纯盘后 / 期货）：只对纳指100 有用，但开关打开或默认都拉一次
 loadAfterHours().then(ok=>{ if(ok) render(); });
 checkHashSync();
