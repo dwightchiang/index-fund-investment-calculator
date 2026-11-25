@@ -105,7 +105,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-25f 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-25g 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -426,7 +426,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-25f";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-25g";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1394,6 +1394,15 @@ async function fetchNdxDailyPct(){
    盘后/期货是分钟级变化的，缓存 10 分钟太久 → 缩短到 2 分钟。
    页面每次刷新行情、或切回页面时都会重新取（见 refreshQuotes / visibilitychange）。 */
 const AH_TTL_MS = 2*60*1000;
+/* 版本变化时清掉盘后缓存：避免「代码改了、但界面还在用旧计算结果」。
+   （之前出现过的现象：修好 nyToday 后页面仍显示旧日期，就是吃的这份缓存） */
+const AH_VER_KEY = "dca-afterhours-ver";
+try{
+  if(localStorage.getItem(AH_VER_KEY) !== VER){
+    localStorage.removeItem(AH_CACHE);
+    localStorage.setItem(AH_VER_KEY, VER);
+  }
+}catch(e){}
 async function loadAfterHours(force){
   if(!force){
     try{
@@ -1401,7 +1410,20 @@ async function loadAfterHours(force){
       if(c && c.at && Date.now()-c.at < AH_TTL_MS && c.qivPost!==undefined){ AH=c; }
     }catch(e){}
   }
-  const stale = force || Date.now()-(AH.at||0) > AH_TTL_MS;
+  // ★ 即使缓存还没过期，只要缓存里的 NDX 日期不是「当前应有的最后一个交易日」，
+  //   就强制刷新（否则页面会一直显示旧日期）
+  const wantNdx = (function(){
+    const d=nyNow(), p=n=>String(n).padStart(2,"0");
+    const cur=`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+    const hm=d.getHours()*100+d.getMinutes();
+    // 美东未过 16:00（今天还没收盘）→ 应为昨天；否则今天
+    if(hm >= 1600) return cur;
+    const y=new Date(d); y.setDate(y.getDate()-1);
+    while(y.getDay()===0||y.getDay()===6) y.setDate(y.getDate()-1);
+    return `${y.getFullYear()}-${p(y.getMonth()+1)}-${p(y.getDate())}`;
+  })();
+  const ndxOutdated = !AH.ndxDate || AH.ndxDate < wantNdx;
+  const stale = force || ndxOutdated || Date.now()-(AH.at||0) > AH_TTL_MS;
   if(!stale) return false;
   let changed=false;
 
@@ -1411,8 +1433,14 @@ async function loadAfterHours(force){
     const d = await fetchNdxDailyPct();
     ndxPct = d.pct;
     AH.ndxDate = d.date; AH.ndxClose = d.close; AH.ndxPct = d.pct;
+    AH.ndxFail = 0;
     changed = true;
-  }catch(e){ /* 拿不到就沿用上次的 */ }
+  }catch(e){
+    // 拿不到就沿用上次的；连续失败 3 次后把 ndxDate 写成「期望值」，
+    // 避免因为「日期一直旧」而每分钟都重试（网络挂了会白刷）
+    AH.ndxFail = (AH.ndxFail||0) + 1;
+    if(AH.ndxFail >= 3) AH.ndxDate = wantNdx;
+  }
 
   // ① QIV（经代理）→ 盘后涨跌 = QIV值 / NDX当日收盘 − 1
   //    ★ 不能用 header.percent / pctChange：实测它恒为 0.00%（页面没渲染好）。
