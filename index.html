@@ -105,7 +105,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-25g 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-25h 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -233,7 +233,7 @@
       <button id="fExpandAll" style="display:none">⤵ 展开全部</button>
       <button id="fSnap">存档</button>
       <button id="fYW" title="按「百分位数据起点」的年数加权：(5−最低分位)×(年数/10)+跌幅，再乘单位">年数加权</button>
-      <button id="fAH" title="纳指100：把盘后涨跌也算进金额 —— (20−分位)×系数 − 盘后涨跌%×10">盘后加减</button>
+      <button id="fAH" title="纳指100：把盘后涨跌算进金额 —— (20−分位)×系数 − 盘后涨跌%×10（跌了多投、涨了少投）。也可在行内 ⚙ 里单独选源">盘后加减</button>
       <span id="count1" style="font-size:12px;color:var(--dim);margin-left:auto;align-self:center"></span>
     </div>
     <div class="filters" id="retrySegs">
@@ -426,7 +426,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-25g";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-25h";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1735,6 +1735,7 @@ function afterHoursOptions(it){
   if(AH.fut!==null && AH.fut!==undefined)
     out.push({ key:"fut15", label:`期货15:00至今 ${AH.fut>=0?"+":""}${AH.fut.toFixed(2)}%`, val:AH.fut });
   out.push({ key:"manual", label:"手填…", val:num(it.mpct3) });
+  out.push({ key:"off", label:"不参与（关闭）", val:null });   // 明确关掉盘后加减
   return out;
 }
 /* 「自动」的取值顺序：QIV → QQQ → 期货纯盘后 → 期货15:00 基准 */
@@ -1748,6 +1749,7 @@ function afterHoursAuto(it){
 /* 盘后涨跌取哪个值：按 it.ahPick（下拉选择）决定，默认 auto */
 function afterHoursOf(it){
   const pick = it.ahPick || "auto";
+  if(pick==="off")    return null;      // 明确关闭
   if(pick==="manual") return num(it.mpct3);
   if(pick==="qiv")  return (AH.qivPost ?? null);
   if(pick==="qqq")  return (AH.qqqPost ?? null);
@@ -1758,6 +1760,7 @@ function afterHoursOf(it){
 /* 当前用的是哪个源（手填 / QIV / QQQ / 期货），用于在界面上说明 */
 function afterHoursSrc(it){
   const pick = it.ahPick || "auto";
+  if(pick==="off")    return "关闭";
   if(pick==="manual") return "手填";
   if(pick==="qiv")    return "QIV";
   if(pick==="qqq")    return "QQQ";
@@ -1778,8 +1781,12 @@ function calcJC(it){
   if(!o.coef){ o.text="分位≥20 不投"; return o; }
   const base=Math.round((20-pct)*o.coef*100)/100;
   // 盘后涨跌（只对纳指100 这类 jc 行生效）
+  // ★ 只要下拉菜单选定了具体数据源（ahPick 不是空），就参与计算 ——
+  //   不再强制依赖顶部「盘后加减」总开关（用户选了源却不变金额很困惑）。
+  //   ahPick = "off" 时才明确关闭。
   const ah = afterHoursOf(it);
-  if(state.ahOn && ah!==null){
+  const ahActive = (it.ahPick !== "off") && ah!==null;
+  if(ahActive){
     o.ah = ah;
     o.ahAdj = Math.round(-ah*AH_K*100)/100;   // 跌为正、涨为负
   }
@@ -3707,23 +3714,34 @@ $("#fYW").onclick=()=>{
   state.yw = !state.yw;
   save(); syncYWBtn(); render();
 };
-/* 「盘后加减」开关：纳指100 金额里加入盘后涨跌项 */
+/* 「盘后加减」总开关：
+   打开 → 所有 jc 行（纳指100）的 ahPick 设为 auto（自动选可用的源）
+   关闭 → 所有 jc 行的 ahPick 设为 off
+   这样顶部开关和每行下拉菜单**联动**，不会出现「选了源但金额不变」。 */
 function syncAHBtn(){
   const b=$("#fAH"); if(!b) return;
-  b.classList.toggle("on", !!state.ahOn);
-  b.textContent = state.ahOn ? "盘后加减·开" : "盘后加减";
+  // 开关状态 = 有没有任意一行处于"参与"状态
+  const anyOn = state.list1.some(it=>it.formula==="jc20" && (it.ahPick||"auto")!=="off");
+  b.classList.toggle("on", anyOn);
+  b.textContent = anyOn ? "盘后加减·开" : "盘后加减";
 }
 $("#fAH").onclick=async ()=>{
-  state.ahOn = !state.ahOn;
+  const anyOn = state.list1.some(it=>it.formula==="jc20" && (it.ahPick||"auto")!=="off");
+  const turnOn = !anyOn;
+  // 应用到所有 jc 行
+  state.list1.forEach(it=>{
+    if(it.formula==="jc20"){ it.ahPick = turnOn ? "auto" : "off"; it.rev=Date.now(); }
+  });
+  state.ahOn = turnOn;
   save(); syncAHBtn();
-  if(state.ahOn){
-    // 打开时立刻拉一次盘后数据
+  if(turnOn){
     await loadAfterHours(true);
-    if(AH.qivPost===null && AH.fut===null){
-      alert("拿不到盘后数据：\n· QIV 需要代理（设置里填 Worker 地址）\n· 期货直连也可能被拦\n\n可以在纳指100 的 ⚙ 里手填「盘后涨跌」。");
+    const noData = AH.qivPost===null && AH.qqqPost===null && AH.futPost===null && AH.fut===null;
+    if(noData){
+      alert("拿不到盘后数据：\n· QIV 需要代理（设置里填 Worker 地址）\n· 期货也需要代理（/fut 路由）\n\n可以在纳指100 的 ⚙ 里选「手填…」自己填。");
     }
   }
-  render();
+  render(); renderTotals();
 };
 $("#fSnap").onclick=()=>{
   ensureOrder();
@@ -4120,7 +4138,18 @@ document.addEventListener("change", e=>{
     if(!it) return;
     it.ahPick = t.value;
     it.rev = Date.now();
-    save(); render(); scheduleCloudPush();
+    save();
+    // ★ 立即重算并重绘（含「今日合计」）：选完源后金额要马上跟着变
+    render();
+    renderTotals();
+    scheduleCloudPush();
+    // 选「手填…」→ 自动聚焦到那个输入框
+    if(t.value==="manual"){
+      setTimeout(()=>{
+        const inp=document.querySelector(`input[data-k="mpct3"][data-id="${it.id}"]`);
+        if(inp){ inp.focus(); try{ inp.select(); }catch(err){} }
+      }, 60);
+    }
   }
 });
 $("#fTodo").onclick=()=>{

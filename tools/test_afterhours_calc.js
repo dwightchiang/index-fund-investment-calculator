@@ -61,18 +61,26 @@ setTimeout(() => {
     nd.min = "";
   `, sandbox);
 
-  // ---- 关闭开关：原公式 (20−16.16)×5 = 19.2 ----
+  // ---- 关闭（ahPick="off"）：原公式 (20−16.16)×5 = 19.2 ----
+  // ★ 语义已改为由每行 ahPick 决定，不再看 state.ahOn
+  vm.runInContext(`
+    (function(){
+      const nd = state.list1.find(x=>x.code==="NDX");
+      nd.ahPick = "off";
+    })()
+  `, sandbox);
   let r = vm.runInContext(`calcRow(state.list1.find(x=>x.code==="NDX"))`, sandbox);
   console.log(`   关闭：分位=${r.pct} 系数=${r.coef} 金额=${r.amount} 盘后=${r.ah}`);
   check("① 关闭 → 系数 5", r.coef, 5);
   check("② 关闭 → 金额 19.2", r.amount, 19.2);
   check("③ 关闭 → 不含盘后项", r.ah, null);
 
-  // ---- 打开开关：19.2 − 1.34×10 = 19.2 − 13.4 = 5.8 ----
+  // ---- 打开（ahPick="auto"）：19.2 − 1.34×10 = 5.8 ----
   r = vm.runInContext(`
     (function(){
-      state.ahOn = true;
-      return calcRow(state.list1.find(x=>x.code==="NDX"));
+      const nd = state.list1.find(x=>x.code==="NDX");
+      nd.ahPick = "auto";
+      return calcRow(nd);
     })()
   `, sandbox);
   console.log(`   打开：基础=${r.base} 盘后=${r.ah}% 调整=${r.ahAdj} 金额=${r.amount}`);
