@@ -300,12 +300,86 @@ export default {
     }
 
     if (path === "/ping") {
-      return new Response(JSON.stringify({ ok: true, v: "2026-11-23", quote: "/quote?code=399997",
+      return new Response(JSON.stringify({ ok: true, v: "2026-11-25", quote: "/quote?code=399997",
                                            batch: "/quotes?codes=399997,931139",
                                            dbg: "/dbg?code=H11136",
-                                           qiv: "/qiv" }), {
+                                           qiv: "/qiv", fut: "/fut?code=hf_NQ" }), {
         headers: { "Content-Type": "application/json; charset=utf-8", ...cors },
       });
+    }
+
+    /* ---------- 新浪期货（纳指期货 hf_NQ 等） ----------
+       为什么必须代理：
+         新浪 hq.sinajs.cn 校验 Referer，必须是新浪自己的域名；
+         浏览器从 GitHub Pages 请求时 Referer 是 dwightchang.github.io → 403。
+         而 Worker 里可以自定义 Referer，所以这里代取。
+
+       腾讯 qt.gtimg.cn 没有收录纳指期货（实测 hf_ 系列只有
+         hf_ES 标普 / hf_HSI 恒指 / hf_GC 黄金 / hf_CL 原油 / hf_SI 白银 / hf_HG 美铜），
+         所以纳指期货只能走新浪。
+
+       返回字段（与新浪原始顺序一致，页面按索引取）：
+         0 最新  1 涨跌%  2 买  3 卖  4 最高  5 最低  6 时间
+         7 昨结  8 昨收  9..11 备用  12 日期  13 名称
+       页面用法：盘后涨跌 = 最新/昨结 − 1（期货「昨结」= 上一交易日收盘时的价） */
+    if (path === "/fut") {
+      const t0 = Date.now();
+      // 用户可能传 hf_NQ / HF_NQ；统一成大写做校验，但请求新浪要用**小写**
+      const raw = (url.searchParams.get("code") || "hf_NQ").trim();
+      const upper = raw.toUpperCase().replace(/[^A-Z0-9_]/g, "");
+      if (!/^HF_[A-Z0-9]{2,10}$/.test(upper)) {
+        return new Response(JSON.stringify({ error: "bad-code", code: raw }), {
+          status: 400,
+          headers: { "Content-Type": "application/json; charset=utf-8", ...cors },
+        });
+      }
+      const sinaCode = upper.toLowerCase();     // hf_nq
+      // 新浪返回的变量名是小写（var hq_str_hf_NQ="..."），代码部分大小写不敏感
+      try {
+        const r = await fetch("https://hq.sinajs.cn/list=" + sinaCode, {
+          headers: {
+            "User-Agent": UA,
+            // ★ 关键：新浪要求 Referer 是自家域名，否则 403
+            "Referer": "https://finance.sina.com.cn/",
+            "Accept": "*/*",
+          },
+          cf: { cacheTtl: 20, cacheEverything: true },
+        });
+        if (!r.ok) throw new Error("sina-http-" + r.status);
+        const body = await r.text();
+        // 新浪变量名保留原始大小写（hf_NQ），用 i 标志匹配
+        const m = new RegExp('hq_str_' + sinaCode + '="([^"]*)"', "i").exec(body);
+        if (!m || !m[1]) throw new Error("sina-empty");
+        const p = m[1].split(",");
+        const num = (i) => {
+          const v = parseFloat(p[i]);
+          return isFinite(v) ? v : null;
+        };
+        const last = num(0), prev = num(7);
+        const out = {
+          code: upper,
+          last,
+          prevSettle: prev,
+          prevClose: num(8),
+          high: num(4),
+          low: num(5),
+          time: p[6] || "",
+          date: p[12] || "",
+          name: p[13] || "",
+          // 对昨结涨跌% —— 期货「昨结」就是上一交易日收盘时的价，
+          // 所以这个值本身就是「上一交易日收盘 → 现在」的变动（盘后涨跌）
+          pct: (last !== null && prev) ? Math.round((last / prev - 1) * 10000) / 100 : null,
+          ms: Date.now() - t0,
+        };
+        return new Response(JSON.stringify(out), {
+          headers: { "Content-Type": "application/json; charset=utf-8", ...cors },
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: String(e.message || e), code: upper, ms: Date.now() - t0 }), {
+          status: 502,
+          headers: { "Content-Type": "application/json; charset=utf-8", ...cors },
+        });
+      }
     }
 
     /* ---------- QIV：纳斯达克100 盘后指标 ----------

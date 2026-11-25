@@ -68,15 +68,26 @@ setTimeout(() => {
   // 替换 fetchWithTimeout 返回假数据
   vm.runInContext(`
     fetchWithTimeout = async () => ({ ok:true, text: async () => ${JSON.stringify(fakeKline)} });
-    // 把「美东今天」固定成 2026-11-23，确保最后一条会被丢弃
+    // 把「美东今天」固定成 2026-11-23，且美东还没到 16:00（盘中）→ 最后一条会被丢弃
     nyToday = () => "2026-11-23";
+    nyNowHm = () => 1030;
   `, sandbox);
 
   const r = vm.runInContext("fetchNdxDailyPct()", sandbox);
   return r.then(d => {
-    console.log(`   NDX 日线取到：${d.date} 收 ${d.close}  涨跌 ${d.pct}%`);
-    check("① 丢掉盘中那条，用 11-20 收盘", d.date, "2026-11-20");
-    check("② NDX 当日% = -5.61（不是盘中的 +6.11）", d.pct, -5.61);
+    console.log(`   盘中场景 → NDX 日线取到：${d.date} 收 ${d.close}  涨跌 ${d.pct}%`);
+    check("① 盘中：丢掉今天那条，用 11-20 收盘", d.date, "2026-11-20");
+    check("② 盘中：NDX 当日% = -5.61（不是盘中的 +6.11）", d.pct, -5.61);
+
+    // ---- ①b 美东已过 16:00（今天已收盘）→ 应该用今天那条 ----
+    vm.runInContext(`nyNowHm = () => 1700;`, sandbox);
+    return vm.runInContext("fetchNdxDailyPct()", sandbox);
+  }).then(d2 => {
+    console.log(`   收盘后场景 → NDX 日线取到：${d2.date} 收 ${d2.close}  涨跌 ${d2.pct}%`);
+    check("①b 收盘后：采用今天(11-23)那条", d2.date, "2026-11-23");
+    check("②b 收盘后：涨跌 = +6.11", d2.pct, 6.11);
+    // 恢复成盘中设置，供后面的用例使用
+    vm.runInContext(`nyNowHm = () => 1030;`, sandbox);
 
     // ---- ③ QIV 日期不一致 → 弃用 ----
     const qivCase = vm.runInContext(`

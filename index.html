@@ -105,7 +105,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-25d 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-25e 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -426,7 +426,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-25d";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-25e";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -841,8 +841,8 @@ function fetchWithTimeout(url, ms=8000){
 function proxyBase(){
   let p=(state.proxy||"").trim().replace(/\s+/g,"");
   if(!p) return "";
-  // 填成 .../quote、.../quotes、.../ping、.../dbg（自检地址）、或带尾斜杠，都能自动认出来
-  p=p.replace(/\/(quote|quotes|ping|dbg|qiv)\/?$/i,"");
+  // 填成 .../quote、.../quotes、.../ping、.../dbg（自检地址）、/qiv、/fut 或带尾斜杠，都能自动认出来
+  p=p.replace(/\/(quote|quotes|ping|dbg|qiv|fut)\/?$/i,"");
   p=p.replace(/\/+$/,"");
   if(p && !/^https?:\/\//i.test(p)) p="https://"+p;   // 少了协议也能用
   return p;
@@ -1460,19 +1460,49 @@ async function loadAfterHours(force){
     }
   }catch(e){}
 
-  // ② 期货（新浪 hf_NQ，JSONP）→ 同样减 NDX%，与 QIV 严格同口径
+  // ② 期货（纳指期货 hf_NQ）
+  //    ★ 优先走代理 /fut：新浪校验 Referer 必须是新浪域名，
+  //      浏览器从 GitHub Pages 直连会被 403（腾讯也没收录纳指期货）。
+  //      代理拿不到时再退回 JSONP 直连（某些环境恰好能过）。
   {
     try{
-      // ★ 显式传变量名：新浪只给 hq_str_hf_NQ，别让加载器去猜
-      const txt = await loadScriptText("https://hq.sinajs.cn/list=hf_NQ&_="+Date.now(),
-                                       8000, "gbk", "hq_str_hf_NQ");
-      const m = /hq_str_hf_NQ="([^"]*)"/.exec(txt);
-      if(!m) throw new Error("期货解析失败");
-      const p = m[1].split(",");
-      const last = parseFloat(p[0]), prev = parseFloat(p[7]);
-      if(isFinite(last) && isFinite(prev) && prev){
+      let last=null, prev=null, futTime="", futName="";
+      let via="";
+      // ① 代理
+      if(proxyUsable()){
+        try{
+          const r=await fetchWithTimeout(proxyBase()+"/fut?code=hf_NQ&_="+Date.now(), 12000);
+          if(r.ok){
+            const j=await r.json();
+            if(j && !j.error && j.last>0 && j.prevSettle>0){
+              last=+j.last; prev=+j.prevSettle;
+              futTime=j.time||""; futName=j.name||"";
+              via="代理";
+            }
+          }
+        }catch(e){ /* 代理失败 → 直连 */ }
+      }
+      // ② JSONP 直连兜底
+      if(last===null){
+        try{
+          const txt = await loadScriptText("https://hq.sinajs.cn/list=hf_NQ&_="+Date.now(),
+                                           8000, "gbk", "hq_str_hf_NQ");
+          const m = /hq_str_hf_NQ="([^"]*)"/.exec(txt);
+          if(m){
+            const p = m[1].split(",");
+            const l=parseFloat(p[0]), pr=parseFloat(p[7]);
+            if(isFinite(l) && isFinite(pr) && pr){
+              last=l; prev=pr; futTime=p[6]||""; futName=p[13]||"";
+              via="直连";
+            }
+          }
+        }catch(e){ /* 直连也被拦 → 保持 null */ }
+      }
+      if(last!==null && isFinite(last) && isFinite(prev) && prev){
+        AH.futVia = via;
+        AH.futName = futName;
         AH.futPrice = last;
-        AH.futTime = p[6] || "";
+        AH.futTime = futTime;
         // 基准：北京时间 15:00 的点位（15:00 前买入按当日净值，所以以它为参照）
         let base = getFutBase();
         if(base){
@@ -1653,7 +1683,9 @@ function afterHoursWhyNo(){
   if(AH.futRaw!==null && AH.futRaw!==undefined && AH.futSameDay===false)
     why.push(`期货昨结(${AH.futRaw}%)与 NDX(${AH.ndxPct}%)不同交易日，已弃用`);
   if(AH.futRaw===null||AH.futRaw===undefined)
-    why.push("期货没取到（新浪接口可能被拦）");
+    why.push(proxyUsable()
+      ? "期货没取到（代理 /fut 失败，Worker 需重新部署）"
+      : "期货没取到（需代理：新浪校验 Referer，直连会被 403）");
   return why.length ? `（${why.join("；")}）` : "";
 }
 /* 可选的三路盘后涨跌（下拉菜单用）。
