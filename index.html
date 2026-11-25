@@ -105,7 +105,7 @@
   label{display:block;font-size:10px;color:var(--dim);margin-bottom:2px}
 
   /* ② */
-  /* 回撤行：单行紧凑布局（已于 v2026-11-25e 去掉系数列） */
+  /* 回撤行：单行紧凑布局（已于 v2026-11-25f 去掉系数列） */
   .row2{padding:7px 9px}
   .row2 .grid{grid-template-columns:1.35fr 1fr 1.15fr 1.05fr .85fr auto;gap:5px}
   .row2 .cell{text-align:center;font-size:12px;color:var(--dim);line-height:1.15;
@@ -426,7 +426,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-25e";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-25f";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1338,26 +1338,27 @@ const AH_CACHE = "dca-afterhours-cache";
    ★ 解决：只接受**已收盘**的那条。判断依据：
        last.date 严格早于「美东今天」；或者该条成交量已接近完整交易日水平。
      更稳的做法：如果最后一条的日期 == 美东今天，说明还在盘中，退回倒数第二条。 */
-/* 美东「现在」的日期。
-   ★ 之前写死 -4 小时（夏令时），冬令时应该是 -5。
-     美东冬令时：UTC-5；夏令时：UTC-4（3月第二个周日 ~ 11月第一个周日）。
-     11 月已过夏令时 → UTC-5。这里用近似判断，误差不会超过 1 小时。 */
-function nyToday(){
-  const now=new Date();
-  const utc=now.getTime()+now.getTimezoneOffset()*60000;
-  const m=now.getUTCMonth()+1, d=now.getUTCDate();
-  // 粗略：3~10 月算夏令时（UTC-4），其余 UTC-5
-  const off=(m>=3 && m<=10) ? -4 : -5;
-  return new Date(utc+off*3600000).toISOString().slice(0,10);
-}
-/* 美股是否已收盘（美东 16:00 后）。
-   日K最后一条如果等于「美东今天」且还没到 16:00，说明是盘中未完成的数据，要丢掉。 */
-function nyNowHm(){
+/* 美东「现在」的日期（YYYY-MM-DD）。
+   ★ 必须用**本地格式化**，不能用 toISOString()：
+     toISOString 会再按 UTC 转换一次，导致日期偏移一天
+     （北京时间 11-25 13:10 = 美东 11-25 00:10，toISOString 却得到 11-24T16:10Z）。
+     这个 bug 会让「美东今天」被算成昨天，从而把昨天那条**已收盘**的日线误删。 */
+function nyNow(){
   const now=new Date();
   const utc=now.getTime()+now.getTimezoneOffset()*60000;
   const m=now.getUTCMonth()+1;
+  // 美东冬令时 UTC-5，夏令时 UTC-4（3~10 月粗略算夏令时）
   const off=(m>=3 && m<=10) ? -4 : -5;
-  const d=new Date(utc+off*3600000);
+  return new Date(utc+off*3600000);
+}
+function nyToday(){
+  const d=nyNow();
+  const p=n=>String(n).padStart(2,"0");
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+}
+/* 美东现在几点（HHMM），用于判断是否已过 16:00 收盘 */
+function nyNowHm(){
+  const d=nyNow();
   return d.getHours()*100+d.getMinutes();
 }
 async function fetchNdxDailyPct(){
@@ -2519,7 +2520,8 @@ function renderSec1(){
             }
             const ref=[];
             if(AH.ndxDate) ref.push(`NDX ${AH.ndxDate} 收盘 ${AH.ndxPct>=0?"+":""}${AH.ndxPct}%`);
-            if(AH.qiv!=null) ref.push(`QIV原始 ${AH.qiv}%${AH.qivSameDay===false?"（日期不符，已弃用）":""}`);
+            // AH.qiv 是 QIV 的**指数点位**（如 26209.11），不是百分比，别带 %
+            if(AH.qiv!=null) ref.push(`QIV点位 ${AH.qiv}${AH.qivSameDay===false?"（日期不符，已弃用）":""}`);
             if(AH.futRaw!=null) ref.push(`期货原始 ${AH.futRaw}%`);
             if(ref.length) lines.push(`参考：${ref.join("；")}`);
             if(jcD) lines.push(`韭圈儿：${jcD}`);

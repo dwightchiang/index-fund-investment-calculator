@@ -324,7 +324,8 @@ export default {
        页面用法：盘后涨跌 = 最新/昨结 − 1（期货「昨结」= 上一交易日收盘时的价） */
     if (path === "/fut") {
       const t0 = Date.now();
-      // 用户可能传 hf_NQ / HF_NQ；统一成大写做校验，但请求新浪要用**小写**
+      // 用户可能传 hf_NQ / HF_NQ；校验时统一大写，请求新浪时用**规范大小写** hf_NQ
+      // ★ 实测：新浪只认 hf_NQ（小写 hf_nq 会返回空值 hq_str_hf_nq=""）
       const raw = (url.searchParams.get("code") || "hf_NQ").trim();
       const upper = raw.toUpperCase().replace(/[^A-Z0-9_]/g, "");
       if (!/^HF_[A-Z0-9]{2,10}$/.test(upper)) {
@@ -333,8 +334,8 @@ export default {
           headers: { "Content-Type": "application/json; charset=utf-8", ...cors },
         });
       }
-      const sinaCode = upper.toLowerCase();     // hf_nq
-      // 新浪返回的变量名是小写（var hq_str_hf_NQ="..."），代码部分大小写不敏感
+      // HF_NQ → hf_NQ（前缀小写，代号保留大写）
+      const sinaCode = upper.replace(/^HF_/, "hf_");
       try {
         const r = await fetch("https://hq.sinajs.cn/list=" + sinaCode, {
           headers: {
@@ -347,7 +348,7 @@ export default {
         });
         if (!r.ok) throw new Error("sina-http-" + r.status);
         const body = await r.text();
-        // 新浪变量名保留原始大小写（hf_NQ），用 i 标志匹配
+        // 变量名大小写不敏感匹配
         const m = new RegExp('hq_str_' + sinaCode + '="([^"]*)"', "i").exec(body);
         if (!m || !m[1]) throw new Error("sina-empty");
         const p = m[1].split(",");
@@ -371,6 +372,7 @@ export default {
           pct: (last !== null && prev) ? Math.round((last / prev - 1) * 10000) / 100 : null,
           ms: Date.now() - t0,
         };
+        if (out.last === null) throw new Error("sina-null-last");
         return new Response(JSON.stringify(out), {
           headers: { "Content-Type": "application/json; charset=utf-8", ...cors },
         });

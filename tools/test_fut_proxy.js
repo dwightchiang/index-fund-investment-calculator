@@ -15,8 +15,12 @@ console.log("── Worker /fut 路由 ──");
 check("① 有 /fut 路由", workerSrc.includes('path === "/fut"'), true);
 check("② 带新浪 Referer（关键）",
       /Referer["']?\s*:\s*["']https:\/\/finance\.sina\.com\.cn\//.test(workerSrc), true);
-check("③ 请求新浪时用小写代码",
-      /const sinaCode = upper\.toLowerCase\(\)/.test(workerSrc), true);
+check("③ 请求新浪时用规范大小写 hf_NQ（★ 全小写会返回空值）",
+      /const sinaCode = upper\.replace\(\/\^HF_\/, "hf_"\)/.test(workerSrc), true);
+check("③b 没有把代码转成全小写",
+      !/upper\.toLowerCase\(\)/.test(workerSrc), true);
+check("③c 空 last 会报错（不返回假数据）",
+      /if \(out\.last === null\) throw new Error\("sina-null-last"\)/.test(workerSrc), true);
 check("④ 解析用大小写不敏感正则",
       /new RegExp\('hq_str_' \+ sinaCode \+ '="\(\[\^"\]\*\)"', "i"\)/.test(workerSrc), true);
 check("⑤ 返回 pct（最新/昨结−1）",
