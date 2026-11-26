@@ -43,12 +43,28 @@
    "ndx_pct": -1.99,
    "qiv_post": -0.02,
    "fut_post": 0.0884,
+   "next_date": "2026-11-25",
+   "next_pct": -0.64,
+   "fut_same_day": true,
+   "qiv_same_day": true,
+   "qiv_date_norm": "2026-11-24"
+  },
+  {
+   "at": "2026-11-26 07:54:33",
+   "qiv_pct": -0.78,
+   "qiv_date": "11/25/2026",
+   "qqq_post": 0.4117,
+   "fut_raw": 0.6641,
+   "ndx_date": "2026-11-25",
+   "ndx_pct": -0.64,
+   "qiv_post": -0.14,
+   "fut_post": 1.3041,
    "next_date": "",
    "next_pct": null,
    "fut_same_day": true,
    "qiv_same_day": true,
-   "qiv_date_norm": "2026-11-24"
+   "qiv_date_norm": "2026-11-25"
   }
  ],
- "updated": "2026-11-25 08:04:05"
+ "updated": "2026-11-26 07:54:33"
 }
