@@ -166,12 +166,26 @@ ok("★ 小字里出现 50.00%（2026以来）、58.53%（10年）、70.66%（�
    line.includes("−50.00%") && line.includes("−58.53%") && line.includes("−70.66%"),
    line.slice(0, 400));
 
-// 起止日 + 持续天数必须出现
-ok("★ 10年回撤带起止日（07-21→02-04）",
-   line.includes("07-21→02-04"), line.slice(0, 400));
+// 起止日必须用完整年份
+ok("★ 10年回撤的起止日是完整 YYYY-MM-DD",
+   line.includes("2021-07-21→2024-02-04"), line.slice(0, 400));
+ok("★ 历史回撤的起止日是完整 YYYY-MM-DD",
+   line.includes("2015-06-04→2018-10-18"), line.slice(0, 500));
+ok("★ 不再用 MM-DD 短格式（不能只有 07-21→02-04）",
+   !/(?<!2021-)07-21→02-04/.test(line.replace("2021-07-21→2024-02-04", "")));
+
+// 持续天数必须在
 ok("★ 10年回撤带持续天数（928天）", line.includes("928天"), line.slice(0, 400));
-ok("★ 历史回撤带起止日与天数（06-04→10-18 / 1232天）",
-   line.includes("06-04→10-18") && line.includes("1232天"), line.slice(0, 500));
+ok("★ 历史回撤带持续天数（1232天）", line.includes("1232天"), line.slice(0, 500));
+
+// 三个指标竖向堆叠：每块一个 .ddr div，不是挤在一起的一串
+const ddrCount = (line.match(/class="ddr"/g) || []).length;
+check("★ 三个指标各自一个块（竖向堆叠，共 3 块）", ddrCount, 3);
+ok("★ 每块都有标签列（ddr-lb）与数值列（ddr-pct）",
+   (line.match(/ddr-lb/g) || []).length === 3 && (line.match(/ddr-pct/g) || []).length === 3);
+ok("日期与天数各有独立 class（ddr-date / ddr-days）",
+   line.includes('class="ddr-date"') && line.includes('class="ddr-days"'));
+
 ok("悬停时能看到峰值/谷底点位",
    line.includes("3576.12") && line.includes("1482.99"),
    line.slice(0, 600));
@@ -180,6 +194,14 @@ ok("悬停时能看到峰值/谷底点位",
 const lineNoAll = m.ddLine({ code:"399006", name:"创业板指", min:"2" });
 ok("历史回撤缺字段时显示「—」而不是 NaN",
    !/NaN|undefined/.test(lineNoAll), lineNoAll.slice(0, 300));
+
+// 第二行：回撤块不在 .nmcell 里，而在 grid 之后
+ok("★ 回撤块移出了名称列（不在 nmcell 内）",
+   !/<div class="nmcell">[\s\S]{0,600}\$\{ddLine\(it\)\}/.test(html),
+   "ddLine 还在 nmcell 里");
+ok("★ 回撤块在 grid 那一行之后（独占整行）",
+   /<\/div>\s*\$\{ddLine\(it\)\}/.test(html) || /\$\{ddLine\(it\)\}<\/div>/.test(html) || html.includes("${ddLine(it)}"),
+   "没找到 ddLine 的位置");
 
 // 取不到历史数据的那一行要显示「—」，不能编数字
 m.getState().list1.push({ id:"9", code:"980138", name:"存储芯片", min:"2" });
@@ -192,7 +214,10 @@ ok("数据源没收录的指数显示「—」而不是假数字",
 ok("★ 页面上有 📉 回撤对比 按钮", html.includes('id="fDD"') && html.includes("📉 回撤对比"));
 ok("★ 按钮有点击处理（开关式）", /\$\("#fDD"\)\.onclick/.test(html) && html.includes("ddOn = !ddOn"));
 ok("★ 按钮状态会同步（updateDdBtn）", html.includes("function updateDdBtn") && html.includes("updateDdBtn();"));
-ok("★ 定投行里插入了回撤小字", /<span class="code2">[\s\S]{0,400}\$\{ddLine\(it\)\}/.test(html));
+ok("★ 定投行里插入了回撤块", html.includes("${ddLine(it)}"));
+ok("★ 回撤块紧跟 grid 之后、在展开面板之前（独占指数的第二行）",
+   /<\/div>\s*\$\{ddLine\(it\)\}\s*<div class="expand/.test(html),
+   "位置不对：应在 grid 收尾 </div> 之后、expand 之前");
 ok("★ 启动时加载 data/drawdowns.json", html.includes("data/drawdowns.json") && html.includes("loadDrawdowns"));
 ok("★ 回撤数据版本变了会丢缓存", html.includes("DD_VER_KEY") && html.includes("!==VER"));
 ok("回撤数据不从网络实时抓（离线可用）",

@@ -75,10 +75,18 @@
   .nmcell{display:flex;flex-direction:column;line-height:1.15;overflow:hidden;min-width:0}
   .nm2{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .code2{font-size:10px;color:#64748b;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis}
-  /* 📉 回撤对比：名字下面那些小字。手机上要能换行，不许撑破行高 */
-  .ddline{display:flex;flex-wrap:wrap;gap:0 10px;font-size:10px;color:var(--dim);
-          line-height:1.45;margin-top:1px;overflow:hidden}
-  .ddline b{font-weight:600;font-variant-numeric:tabular-nums}
+  /* 📉 回撤对比：独占整行（名称/分位/涨跌/金额那行的下面），三个指标竖向堆叠。
+     用 grid 让「标签列」对齐，日期用完整 YYYY-MM-DD 也能排得下。 */
+  .ddline{display:flex;flex-direction:column;gap:1px;margin:3px 0 2px;
+          padding:4px 6px;border-radius:6px;background:rgba(148,163,184,.07);
+          font-size:10.5px;color:var(--dim);line-height:1.5;overflow:hidden}
+  .ddr{display:flex;align-items:baseline;gap:7px;min-width:0;flex-wrap:wrap}
+  .ddr-lb{flex:0 0 auto;width:46px;opacity:.85}
+  .ddr-pct{flex:0 0 auto;min-width:52px;font-weight:600;font-variant-numeric:tabular-nums;
+           text-align:right;color:var(--fg)}
+  .ddr-date{font-variant-numeric:tabular-nums;opacity:.72}
+  .ddr-days{font-variant-numeric:tabular-nums;opacity:.72}
+  .ddr-note{font-size:10px;color:var(--amber);opacity:.9}
   .ops{display:flex;gap:0}
   .ico{background:transparent;border:none;color:var(--gray);font-size:14px;padding:3px 5px;line-height:1}
   .ico.del{font-size:17px}
@@ -431,7 +439,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-27b";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-28a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1203,43 +1211,60 @@ function dd2026Of(it){
   if(!(price>0)) return null;
   return { pct:(1-price/d.hi2026)*100, hi:d.hi2026, hiDate:d.hi2026Date, price };
 }
-/* 回撤小节：`10年 −58.53% 2021-07-21→2024-02-04（928天）`
-   悬停给出峰值/谷底点位。labels 用短名以适应手机窄屏。 */
-function ddPart(label, d, pfx){
-  const pct = d[pfx];
-  if(pct===null || pct===undefined){
-    return `<span style="margin-right:10px;color:var(--dim)">${label} <b>—</b></span>`;
-  }
-  const from=String(d[pfx+"PeakDate"]||"").slice(0,10);
-  const to  =String(d[pfx+"TroughDate"]||"").slice(0,10);
-  const days=d[pfx+"Days"];
-  const tip = `${label}：峰值 ${d[pfx+"Peak"]}（${from}）→ 谷底 ${d[pfx+"Trough"]}（${to}）`
-            + (days!=null ? `　历经 ${days} 天` : "");
-  const span = (from&&to) ? `${from.slice(5)}→${to.slice(5)}` : "";
-  const dur  = (days!=null && days>=0) ? `${days}天` : "";
-  return `<span style="margin-right:10px;color:var(--dim)" title="${tip}">`
-       + `${label} <b>−${Number(pct).toFixed(2)}%</b>`
-       + (span ? ` <span style="opacity:.75">${span}</span>` : "")
-       + (dur  ? ` <span style="opacity:.75">${dur}</span>` : "")
-       + `</span>`;
+/* 回撤块：
+     ╭────────────────────────────────────────────╮
+     │ 2026以来  −28.09%                          │
+     │ 10年      −30.20%  2021-07-21→2024-02-04  928天 │
+     │ 历史      −70.66%  2015-06-04→2018-10-18  1232天│
+     ╰────────────────────────────────────────────╯
+   三个指标竖向堆叠、每层「标签 + 回撤% + 起止日 + 天数」，日期用完整年份。
+   悬停看峰值/谷底点位。 */
+function ddRow(label, pctTxt, from, to, days, tip){
+  const dpart = (from && to) ? `<span class="ddr-date">${from}→${to}</span>` : "";
+  const dday  = (days!==null && days!==undefined && days>=0)
+              ? `<span class="ddr-days">${days}天</span>` : "";
+  return `<div class="ddr" title="${tip}">`
+       + `<span class="ddr-lb">${label}</span>`
+       + `<span class="ddr-pct">${pctTxt}</span>`
+       + dpart + dday
+       + `</div>`;
 }
-/* 定投行下面那行小字 */
+/* 定投行的回撤块（独占一行，在名称/分位/涨跌/金额那行的下面） */
 function ddLine(it){
   if(!ddOn) return "";
   const d=ddOf(it.code);
   const a=dd2026Of(it);
-  const span=(txt,title,color)=>
-    `<span style="margin-right:10px;color:${color}" title="${title}">${txt}</span>`;
   let html="";
-  if(a) html+=span(`2026以来 <b>−${a.pct.toFixed(2)}%</b>`,
-    `当前 ${a.price} ÷ 2026年内最高 ${a.hi}（${a.hiDate}）− 1`, "var(--dim)");
-  else  html+=span(`2026以来 <b>—</b>`, d?"该指数暂无 2026 年行情数据":"该指数没有历史数据（数据源未收录）", "var(--dim)");
-  if(d){
-    html+=ddPart("10年", d, "dd10");
-    html+=ddPart("历史", d, "ddAll");
+
+  // ① 2026 以来：当前点位距 2026 年内最高价的跌幅
+  if(a){
+    html+=ddRow("2026以来", `−${a.pct.toFixed(2)}%`, "", "", null,
+      `当前 ${a.price} ÷ 2026年内最高 ${a.hi}（${a.hiDate}）− 1`);
   }else{
-    html+=ddPart("10年", {}, "dd10");
-    html+=ddPart("历史", {}, "ddAll");
+    html+=ddRow("2026以来", "—", "", "", null,
+      d ? "该指数暂无 2026 年行情数据" : "该指数没有历史数据（数据源未收录）");
+  }
+
+  // ② 10年 / ③ 历史：峰谷最大回撤，带起止日与持续天数
+  const parts=[["10年","dd10"],["历史","ddAll"]];
+  for(const [label,pfx] of parts){
+    const pct = d ? d[pfx] : null;
+    if(pct===null || pct===undefined){
+      html+=ddRow(label, "—", "", "", null,
+        d ? "该指数历史数据不足" : "该指数没有历史数据（数据源未收录）");
+      continue;
+    }
+    const from=String(d[pfx+"PeakDate"]||"").slice(0,10);
+    const to  =String(d[pfx+"TroughDate"]||"").slice(0,10);
+    const days=d[pfx+"Days"];
+    const tip = `${label}最大回撤：峰值 ${d[pfx+"Peak"]}（${from}）`
+              + ` → 谷底 ${d[pfx+"Trough"]}（${to}）`
+              + (days!=null ? `　历经 ${days} 天` : "")
+              + (d.partial && pfx==="dd10" ? `　⚠该指数数据只到 ${d.coveredFrom}，非完整10年` : "");
+    html+=ddRow(label, `−${Number(pct).toFixed(2)}%`, from, to, days, tip);
+  }
+  if(d && d.partial && ddOn){
+    html+=`<div class="ddr-note">数据起于 ${d.coveredFrom}，不足 10 年</div>`;
   }
   return `<div class="ddline">${html}</div>`;
 }
@@ -2653,7 +2678,6 @@ function renderSec1(){
         <div class="nmcell">
           <div class="nmrow"><span class="nm2">${it.name}</span>${jc?(hasAuto?jcBadge(it):`<span class="fb ${autoPct?"fb-stale":"fb-none"}" title="${autoPct?"数据还是 "+autoDate+" 的，没更新到前一交易日":"没获取到前一交易日的分位"}">?</span>`):pctBadge(it)}</div>
           <span class="code2">${it.code}${autoDate?(jc?` · <span style="color:var(--green)">前一交易日 ${autoDate}</span>`:` · ${autoDate}`):""}${(!q&&!jc)?` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`:""}</span>
-          ${ddLine(it)}
         </div>
         ${pctCell}
         ${chgCell}
@@ -2663,6 +2687,7 @@ function renderSec1(){
           <button class="ico" data-gear="${it.id}" title="设置">⚙</button>
         </div>
       </div>
+      ${ddLine(it)}
       <div class="expand ${openPanels.has(it.id)?"show":""}" data-panel="${it.id}">
         <div><label>单位/元</label><input inputmode="decimal" data-k="unit" data-id="${it.id}" value="${it.unit??10}"></div>
         <div><label>手动涨跌%</label><input inputmode="decimal" data-k="mpct" data-id="${it.id}" value="${it.mpct??""}" placeholder="自动"></div>

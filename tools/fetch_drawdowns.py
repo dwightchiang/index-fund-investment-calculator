@@ -127,10 +127,18 @@ class XQ:
 
 
 def csindex(code: str):
-    """中证官网全量日线，返回 [(day, high, low, close), ...]。"""
+    """中证官网全量日线，返回 [(day, high, low, close), ...]。
+
+    ★ startDate 必须给 19900101，不能写 2016：
+      中证官网会返回**指数发布之前**的回溯数据（000852 能回到 2005、
+      930901 能回到 2013），这些正是「历史最大回撤」需要的。
+      以前写死 20160101，白丢了一半历史，10年/历史两个回撤都算小。
+    首行 tradeDate 常是 19900101 这种占位行（high/low 为 null），
+    靠「high is None 就跳过」自然过滤掉。
+    """
     url = ("https://www.csindex.com.cn/csindex-home/perf/index-perf"
-           f"?indexCode={code}&startDate=20160101&endDate=20500101")
-    for attempt in range(2):
+           f"?indexCode={code}&startDate=19900101&endDate=20500101")
+    for attempt in range(3):
         try:
             req = urllib.request.Request(
                 url, headers={**UA, "Referer": "https://www.csindex.com.cn/"})
@@ -143,12 +151,31 @@ def csindex(code: str):
                 d = str(x.get("tradeDate") or "")
                 if len(d) != 8:
                     continue
-                hi, lo, c = x.get("high"), x.get("low"), x.get("close")
-                if hi is None or lo is None:
+                if d == "19900101":
+                    # ★ 占位行：中证官网总在开头塞一条 tradeDate=19900101，
+                    #   数值与真正的首日一模一样（如 930901 首两行都是
+                    #   1006.7/986.58/1000.61）。这条不删，历史回撤窗口会被
+                    #   假拉长 20 年，「历史最大回撤」直接错。
                     continue
+                hi, lo, c = x.get("high"), x.get("low"), x.get("close")
+                # ★ 有些指数（如 931247 中证信创）在 2017-12-29 ~ 2023-08-25
+                #   这段只给 close，high/low 是 null。这时用 close 当高低价 ——
+                #   close-only 的回撤略小于盘中口径，但总比丢掉这 5 年半历史、
+                #   让「历史最大回撤」只看最近 3 年强得多。
+                if c is None:
+                    continue
+                if not hi or not lo:
+                    hi = lo = c
                 rows.append((f"{d[:4]}-{d[4:6]}-{d[6:8]}", float(hi), float(lo),
-                             float(c if c is not None else lo)))
-            return rows or None
+                             float(c)))
+            # 再去一次重：相邻两天数值完全相同 → 前一条是占位
+            out = []
+            for r in rows:
+                if out and r[1:] == out[-1][1:] and r[0] != out[-1][0]:
+                    out[-1] = r                # 保留日期更晚的那条
+                    continue
+                out.append(r)
+            return out or None
         except Exception:  # noqa: BLE001
             time.sleep(1.5 * (attempt + 1))
     return None
@@ -268,18 +295,38 @@ def stats(rows, today: dt.date):
     return out
 
 
-def em_kline(code: str):
+def em_kline(code: str, expect: str = ""):
     """东方财富全量日线。980138（存储芯片）这类国证指数只有这里有。
 
-    东财 secid：6 位数字且 0/1/3 开头 → 沪 1.码 / 深 0.码；98xxxx 是深市 0.码。
+    ★ 必须校验返回的 name，不能只看「拿到数据就算成功」：
+      东财 secid 前缀决定市场，同一串数字在不同市场可能是完全不同的东西。
+      实例：000852 在 1. 是中证1000（点位 5982），在 0. 是深市「石化机械」
+      这只股票（点位 4.59、数据还能追到 1998）。不校验就会把个股当成指数，
+      算出 91% 的假回撤。
+    所以这里按「市场 + 名称」双校验：候选 secid 全试一遍，只接受
+    name 里含「指数/CS/中证/国证/科创/创业」等指数特征、或与 expect 吻合的那份。
+
+    expect：期望的名称关键词（如 "中证1000"），给了就更严格。
     返回 [(day, high, low, close), ...]，失败返回 None。
     """
     c = ALIAS.get(code, code)
     if not re.fullmatch(r"\d{6}", c):
         return None
-    secids = [f"0.{c}", f"1.{c}"] if c[0] in "03" else [f"1.{c}", f"0.{c}"]
+    # 候选市场：指数优先按「沪市 1. / 深市 0.」都试，靠 name 校验挑对的那个
     if c.startswith("98"):
-        secids = [f"0.{c}"]                    # 国证 98xxxx 只在深市
+        secids = [f"0.{c}"]                    # 国证 98xxxx 确实只在深市
+    elif c.startswith("000") or c.startswith("880") or c.startswith("H"):
+        secids = [f"1.{c}", f"0.{c}"]          # 沪市指数（中证/上证系列）
+    elif c[0] in "03":
+        secids = [f"0.{c}", f"1.{c}"]          # 深市指数
+    else:
+        secids = [f"1.{c}", f"0.{c}"]
+
+    INDEX_HINT = ("指数", "CS", "中证", "国证", "上证", "深证", "科创", "创业",
+                  "全指", "价值", "成长", "红利", "消费", "医药", "银行", "证券")
+    # 这些名字一出现就说明是**个股**，无论市场前缀都拒
+    STOCK_HINT = ("股份", "科技", "机械", "电子", "药业", "集团", "实业", "能源",
+                  "材料", "环保", "生物", "通信", "汽车", "地产", "电力")
     for secid in secids:
         url = ("https://push2his.eastmoney.com/api/qt/stock/kline/get"
                f"?secid={secid}&fields1=f1,f2,f3,f4,f5,f6"
@@ -289,8 +336,25 @@ def em_kline(code: str):
             req = urllib.request.Request(
                 url, headers={**UA, "Referer": "https://quote.eastmoney.com/"})
             raw = urllib.request.urlopen(req, timeout=35).read().decode("utf-8", "ignore")
-            klines = ((json.loads(raw) or {}).get("data") or {}).get("klines") or []
+            node = (json.loads(raw) or {}).get("data") or {}
+            klines = node.get("klines") or []
             if not klines:
+                continue
+            name = str(node.get("name") or "")
+            # ★ 校验规则：
+            #   1) 给了 expect → 必须命中 expect（最严格）
+            #   2) 名字里有个股特征词 → 一定是股票，拒
+            #   3) 名字像指数（含「指数」等）→ 收
+            #   4) 都不像但也不像个股（如「存储芯片」「中证白酒」这类纯主题名）→ 收，
+            #      因为东财的指数名称常常就是纯主题词，没有「指数」二字。
+            if expect:
+                ok = expect in name
+            elif any(h in name for h in STOCK_HINT):
+                ok = False
+            else:
+                ok = True
+            if not ok:
+                print(f"          ⚠ 跳过 {secid}（名称「{name}」不像指数）", flush=True)
                 continue
             rows = []
             for k in klines:
@@ -311,10 +375,15 @@ def em_kline(code: str):
 def resolve(code: str, xq: XQ):
     """为一个代码找数据：把所有源都试一遍，取**历史最长**的那份。
 
-    为什么要比较而不是「第一个成功就用」：
-      雪球对 930641（中证中药）只给到 2018-08 起（该指数 2018 年才发布），
-      但中证官网有 2016-01 起的回溯数据。用雪球那份会把 10 年窗口算窄，
-      最大回撤被低估。所以按「最早的那条日线」排序取最优。
+    用户的要求是「所有指数都请以行情数据最长的数据来源为准」，
+    所以这里必须**真的比较**，不能命中一个源就 break：
+      · 雪球   —— 覆盖广，但深的指数只给最近 3000 条（约 12 年）
+      · 中证官网 —— 会给指数发布前的回溯数据，000852 能到 2005、930901 到 2013
+      · 东财   —— 980138 这类国证指数只有它有；但最慢（每只 1~3 秒）
+    最后按「最早那条日线」挑起点最早的一份。
+
+    为了不做无用功：雪球命中后仍然问中证官网（它常常更深）；
+    东财只在「前两个源都没拿到」或「中证官网也没把 10 年填满」时才问。
     """
     cands = []      # [(rows, src)]
     tried = []
@@ -326,7 +395,11 @@ def resolve(code: str, xq: XQ):
             break               # 雪球自带前缀探测，命中一个就够
         tried.append("雪球:" + sym)
         time.sleep(0.4)
+
+    # 中证官网：中证系列（93xxxx/95xxxx/Hxxxx/000xxx）都值得问，它常常最深
     for cd in ([ALIAS[code]] if code in ALIAS else []) + [code]:
+        if not re.fullmatch(r"(\d{6}|H\d{5})", cd):
+            continue
         rows = csindex(cd)
         if rows:
             cands.append((rows, "中证:" + cd))
@@ -334,20 +407,18 @@ def resolve(code: str, xq: XQ):
         tried.append("中证:" + cd)
         time.sleep(0.8)
 
-    # 东财只在「前两个源没拿到」或「拿到的不够 10 年」时才去问 ——
-    # 它最全但也最慢（每只 1~3 秒），不能每只都等它。
-    need_more = (not cands) or (min(c[0][0][0] for c in cands) >
-                                (dt.date.today() - dt.timedelta(days=365 * 9)).isoformat())
-    if need_more:
+    # 东财兜底：前两个源没拿到，或拿到的最早一条还没盖住 10 年
+    ten_years_ago = (dt.date.today() - dt.timedelta(days=365 * 10)).isoformat()
+    best_start = min((c[0][0][0] for c in cands), default="9999")
+    if best_start > ten_years_ago:
         rows = em_kline(code)
         if rows:
             cands.append((rows, "东财:" + ALIAS.get(code, code)))
         else:
             tried.append("东财:" + ALIAS.get(code, code))
-
     if not cands:
         return None, "未取到（" + "、".join(tried[:4]) + "…）"
-    # 起点最早的那份最完整；起点相同则取最后一条更新的
+    # 起点最早的最完整；起点相同取条数多的
     best = min(cands, key=lambda c: (c[0][0][0], -len(c[0])))
     return best[0], best[1]
 
