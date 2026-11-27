@@ -75,7 +75,7 @@
   .nmcell{display:flex;flex-direction:column;line-height:1.15;overflow:hidden;min-width:0}
   .nm2{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .code2{font-size:10px;color:#64748b;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis}
-  /* 📉 回撤对比：名字下面那行小字。手机上要能换行，不许撑破行高 */
+  /* 📉 回撤对比：名字下面那些小字。手机上要能换行，不许撑破行高 */
   .ddline{display:flex;flex-wrap:wrap;gap:0 10px;font-size:10px;color:var(--dim);
           line-height:1.45;margin-top:1px;overflow:hidden}
   .ddline b{font-weight:600;font-variant-numeric:tabular-nums}
@@ -237,7 +237,7 @@
       <button id="fExpandAll" style="display:none">⤵ 展开全部</button>
       <button id="fSnap">存档</button>
       <button id="fYW" title="按「百分位数据起点」的年数加权：(5−最低分位)×(年数/10)+跌幅，再乘单位">年数加权</button>
-      <button id="fDD" title="显示：2026 年以来跌幅 ｜ 近10年最大回撤（只影响显示，不影响金额）">📉 回撤对比</button>
+      <button id="fDD" title="显示：2026 年以来跌幅 ｜ 10年最大回撤 ｜ 历史最大回撤（含起止日与天数）。只影响显示，不影响金额">📉 回撤对比</button>
       <button id="fAH" title="纳指100：把盘后涨跌算进金额 —— (20−分位)×系数 − 盘后涨跌%×10（跌了多投、涨了少投）。也可在行内 ⚙ 里单独选源">盘后加减</button>
       <span id="count1" style="font-size:12px;color:var(--dim);margin-left:auto;align-self:center"></span>
     </div>
@@ -431,7 +431,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-27a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-27b";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1203,6 +1203,26 @@ function dd2026Of(it){
   if(!(price>0)) return null;
   return { pct:(1-price/d.hi2026)*100, hi:d.hi2026, hiDate:d.hi2026Date, price };
 }
+/* 回撤小节：`10年 −58.53% 2021-07-21→2024-02-04（928天）`
+   悬停给出峰值/谷底点位。labels 用短名以适应手机窄屏。 */
+function ddPart(label, d, pfx){
+  const pct = d[pfx];
+  if(pct===null || pct===undefined){
+    return `<span style="margin-right:10px;color:var(--dim)">${label} <b>—</b></span>`;
+  }
+  const from=String(d[pfx+"PeakDate"]||"").slice(0,10);
+  const to  =String(d[pfx+"TroughDate"]||"").slice(0,10);
+  const days=d[pfx+"Days"];
+  const tip = `${label}：峰值 ${d[pfx+"Peak"]}（${from}）→ 谷底 ${d[pfx+"Trough"]}（${to}）`
+            + (days!=null ? `　历经 ${days} 天` : "");
+  const span = (from&&to) ? `${from.slice(5)}→${to.slice(5)}` : "";
+  const dur  = (days!=null && days>=0) ? `${days}天` : "";
+  return `<span style="margin-right:10px;color:var(--dim)" title="${tip}">`
+       + `${label} <b>−${Number(pct).toFixed(2)}%</b>`
+       + (span ? ` <span style="opacity:.75">${span}</span>` : "")
+       + (dur  ? ` <span style="opacity:.75">${dur}</span>` : "")
+       + `</span>`;
+}
 /* 定投行下面那行小字 */
 function ddLine(it){
   if(!ddOn) return "";
@@ -1214,13 +1234,12 @@ function ddLine(it){
   if(a) html+=span(`2026以来 <b>−${a.pct.toFixed(2)}%</b>`,
     `当前 ${a.price} ÷ 2026年内最高 ${a.hi}（${a.hiDate}）− 1`, "var(--dim)");
   else  html+=span(`2026以来 <b>—</b>`, d?"该指数暂无 2026 年行情数据":"该指数没有历史数据（数据源未收录）", "var(--dim)");
-  if(d && d.dd10!==null && d.dd10!==undefined){
-    const part=d.partial ? `（仅 ${String(d.coveredFrom||"").slice(0,7)} 起）` : "";
-    html+=span(`10年最大回撤 <b>−${d.dd10.toFixed(2)}%</b>`,
-      `峰值 ${d.dd10Peak}（${d.dd10PeakDate}）→ 谷底 ${d.dd10Trough}（${d.dd10TroughDate}）${part}`, "var(--dim)");
-    if(d.partial) html+=`<span style="color:var(--amber);font-size:10px">数据仅从 ${String(d.coveredFrom||"").slice(0,7)} 起，非完整10年</span>`;
+  if(d){
+    html+=ddPart("10年", d, "dd10");
+    html+=ddPart("历史", d, "ddAll");
   }else{
-    html+=span(`10年最大回撤 <b>—</b>`, d?"该指数历史数据不足":"该指数没有历史数据（数据源未收录）", "var(--dim)");
+    html+=ddPart("10年", {}, "dd10");
+    html+=ddPart("历史", {}, "ddAll");
   }
   return `<div class="ddline">${html}</div>`;
 }
@@ -1230,7 +1249,7 @@ function updateDdBtn(){
   b.classList.toggle("on", ddOn);
   b.title = ddOn
     ? "收起回撤对比（只影响显示，不影响金额）"
-    : "显示：2026 年以来跌幅 ｜ 近10年最大回撤（只影响显示，不影响金额）";
+    : "显示：2026 年以来跌幅 ｜ 10年最大回撤 ｜ 历史最大回撤（含起止日与天数）。只影响显示，不影响金额";
 }
 
 /* ---------- 分位 ---------- */

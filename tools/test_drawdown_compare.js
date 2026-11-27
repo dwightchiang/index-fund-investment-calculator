@@ -116,9 +116,11 @@ m.setList([
 m.setQuotes({ "399006":{pct:-1, price:2000} });
 m.setDD({ items:{ "399006": {
   hi2026: 4000, hi2026Date:"2026-06-24",
-  hiAll: 4000, hiAllDate:"2026-06-24",
-  dd10: 58.53, dd10Peak:3576.8, dd10PeakDate:"2021-07-21",
-  dd10Trough:1482.9, dd10TroughDate:"2024-02-04",
+  hiAll: 4037.959, hiAllDate:"2015-06-04",
+  dd10: 58.53, dd10Peak:3576.12, dd10PeakDate:"2021-07-21",
+  dd10Trough:1482.99, dd10TroughDate:"2024-02-04", dd10Days:928,
+  ddAll: 70.66, ddAllPeak:4037.959, ddAllPeakDate:"2015-06-04",
+  ddAllTrough:1184.91, ddAllTroughDate:"2018-10-18", ddAllDays:1232,
   partial:false, coveredFrom:"2016-11-01",
   lastClose: 2000, n: 3000 } } });
 
@@ -154,14 +156,30 @@ check("没数据的指数返回 null（不是 NaN）", noData, null);
 m.setDdOn(false);
 check("回撤对比关闭时不显示小字", m.ddLine(m.getState().list1[0]), "");
 
-// 打开时小字含两个数
+// 打开时小字含三个数（2026以来 / 10年 / 历史）
 m.setDdOn(true);
 const line = m.ddLine(m.getState().list1[0]);
-ok("★ 打开后小字含「2026以来」和「10年最大回撤」",
-   line.includes("2026以来") && line.includes("10年最大回撤"),
-   line.slice(0, 200));
-ok("★ 小字里出现 50.00%（2026以来）与 58.53%（10年回撤）",
-   line.includes("−50.00%") && line.includes("−58.53%"), line.slice(0, 300));
+ok("★ 打开后小字含「2026以来」「10年」「历史」三块",
+   line.includes("2026以来") && line.includes("10年") && line.includes("历史"),
+   line.slice(0, 300));
+ok("★ 小字里出现 50.00%（2026以来）、58.53%（10年）、70.66%（历史）",
+   line.includes("−50.00%") && line.includes("−58.53%") && line.includes("−70.66%"),
+   line.slice(0, 400));
+
+// 起止日 + 持续天数必须出现
+ok("★ 10年回撤带起止日（07-21→02-04）",
+   line.includes("07-21→02-04"), line.slice(0, 400));
+ok("★ 10年回撤带持续天数（928天）", line.includes("928天"), line.slice(0, 400));
+ok("★ 历史回撤带起止日与天数（06-04→10-18 / 1232天）",
+   line.includes("06-04→10-18") && line.includes("1232天"), line.slice(0, 500));
+ok("悬停时能看到峰值/谷底点位",
+   line.includes("3576.12") && line.includes("1482.99"),
+   line.slice(0, 600));
+
+// 历史回撤缺数据时显示「—」，不许崩
+const lineNoAll = m.ddLine({ code:"399006", name:"创业板指", min:"2" });
+ok("历史回撤缺字段时显示「—」而不是 NaN",
+   !/NaN|undefined/.test(lineNoAll), lineNoAll.slice(0, 300));
 
 // 取不到历史数据的那一行要显示「—」，不能编数字
 m.getState().list1.push({ id:"9", code:"980138", name:"存储芯片", min:"2" });

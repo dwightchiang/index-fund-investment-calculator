@@ -33,6 +33,7 @@ import datetime as dt
 import http.cookiejar
 import json
 import pathlib
+import re
 import sys
 import time
 import urllib.error
@@ -180,54 +181,81 @@ def tencent_us(code: str = "usNDX"):
 
 
 # ---------------------------------------------------------------- 计算
+def _max_dd(rows):
+    """峰谷最大回撤 + 起止日期 + 持续天数。
+
+    定义（和网页 tooltip 一致）：
+      对每一段「先创新高、再回落」，用 峰值(盘中最高价) 对 之后的最低价(盘中最低价)
+      算跌幅；取跌幅最大的那一段。
+      起止日 = 峰值日 → 谷底日；持续天数 = 两个日期的自然日差。
+    返回 dict，没有回撤时返回 None。
+    """
+    peak = peak_day = None
+    best = None
+    for day, hi, lo, _close in rows:
+        if peak is None or hi > peak:
+            peak, peak_day = hi, day
+        if not peak or peak <= 0:
+            continue
+        dd = (1 - lo / peak) * 100
+        if best is None or dd > best["pct"]:
+            try:
+                days = (dt.date.fromisoformat(day) - dt.date.fromisoformat(peak_day)).days
+            except ValueError:
+                days = None
+            best = {"pct": dd, "peak": peak, "peakDate": peak_day,
+                    "trough": lo, "troughDate": day, "days": days}
+    return best
+
+
 def stats(rows, today: dt.date):
-    """从日线算 2026 年内最高价 + 近 10 年最大回撤。"""
+    """从日线算：2026 年内最高价、10 年最大回撤、历史最大回撤。"""
     if not rows:
         return None
     win_start = (today - dt.timedelta(days=365 * WINDOW_YEARS + 5)).isoformat()
 
     hi2026 = hi2026_day = None
-    peak = peak_day = None
-    worst = worst_peak = worst_peak_day = worst_trough = worst_trough_day = None
     last_close = rows[-1][3]
-
     for day, hi, lo, close in rows:
-        # --- 2026 年内最高（从 2026-01-01 起，含今天）
         if day >= START_2026 and (hi2026 is None or hi > hi2026):
             hi2026, hi2026_day = hi, day
+    if hi2026 is None:
+        best_row = max(rows, key=lambda r: r[1])
+        hi2026, hi2026_day = best_row[1], best_row[0]
 
-        # --- 10 年窗口内的峰谷最大回撤
-        if day < win_start:
-            continue
-        if peak is None or hi > peak:
-            peak, peak_day = hi, day
-        if peak and peak > 0:
-            dd = (1 - lo / peak) * 100
-            if worst is None or dd > worst:
-                worst, worst_peak, worst_peak_day = dd, peak, peak_day
-                worst_trough, worst_trough_day = lo, day
+    # 10 年窗口
+    win_rows = [r for r in rows if r[0] >= win_start]
+    dd10 = _max_dd(win_rows) if win_rows else None
 
-    if hi2026 is None and rows:
-        hi2026, hi2026_day = max((r for r in rows), key=lambda r: r[1])
+    # 全部历史（数据里能找到的最早一条起）
+    ddall = _max_dd(rows)
 
-    # 全部历史最高点（不是你那张表里的「2016 年起」，而是数据里能找到的最早一条起）
+    # 全部历史最高点
     hi_all, hi_all_day = max(((r[1], r[0]) for r in rows), default=(None, None))
 
     # 数据是不是真的覆盖满 10 年（浅的指数要如实标注，不能假装是 10 年）
-    in_win = [r for r in rows if r[0] >= win_start]
-    covered_from = in_win[0][0] if in_win else (rows[0][0] if rows else None)
+    covered_from = win_rows[0][0] if win_rows else (rows[0][0] if rows else None)
     partial = bool(covered_from and covered_from > (today - dt.timedelta(days=365 * 9)).isoformat())
 
-    return {
+    def pack(d, prefix):
+        if not d:
+            return {prefix: None, prefix + "Peak": None, prefix + "PeakDate": None,
+                    prefix + "Trough": None, prefix + "TroughDate": None,
+                    prefix + "Days": None}
+        return {
+            prefix: round(d["pct"], 2),
+            prefix + "Peak": round(d["peak"], 4),
+            prefix + "PeakDate": d["peakDate"],
+            prefix + "Trough": round(d["trough"], 4),
+            prefix + "TroughDate": d["troughDate"],
+            prefix + "Days": d["days"],
+        }
+
+    out = {
         "hi2026": round(hi2026, 4) if hi2026 else None,
         "hi2026Date": hi2026_day,
         "hiAll": round(hi_all, 4) if hi_all else None,
         "hiAllDate": hi_all_day,
-        "dd10": round(worst, 2) if worst is not None else None,
-        "dd10Peak": round(worst_peak, 4) if worst_peak else None,
-        "dd10PeakDate": worst_peak_day,
-        "dd10Trough": round(worst_trough, 4) if worst_trough else None,
-        "dd10TroughDate": worst_trough_day,
         "partial": partial,
         "coveredFrom": covered_from,
         "first": rows[0][0],
@@ -235,6 +263,49 @@ def stats(rows, today: dt.date):
         "lastClose": round(last_close, 4),
         "n": len(rows),
     }
+    out.update(pack(dd10, "dd10"))
+    out.update(pack(ddall, "ddAll"))
+    return out
+
+
+def em_kline(code: str):
+    """东方财富全量日线。980138（存储芯片）这类国证指数只有这里有。
+
+    东财 secid：6 位数字且 0/1/3 开头 → 沪 1.码 / 深 0.码；98xxxx 是深市 0.码。
+    返回 [(day, high, low, close), ...]，失败返回 None。
+    """
+    c = ALIAS.get(code, code)
+    if not re.fullmatch(r"\d{6}", c):
+        return None
+    secids = [f"0.{c}", f"1.{c}"] if c[0] in "03" else [f"1.{c}", f"0.{c}"]
+    if c.startswith("98"):
+        secids = [f"0.{c}"]                    # 国证 98xxxx 只在深市
+    for secid in secids:
+        url = ("https://push2his.eastmoney.com/api/qt/stock/kline/get"
+               f"?secid={secid}&fields1=f1,f2,f3,f4,f5,f6"
+               f"&fields2=f51,f52,f53,f54,f55,f56&klt=101&fqt=1"
+               f"&beg=19900101&end=20500101&lmt=8000")
+        try:
+            req = urllib.request.Request(
+                url, headers={**UA, "Referer": "https://quote.eastmoney.com/"})
+            raw = urllib.request.urlopen(req, timeout=35).read().decode("utf-8", "ignore")
+            klines = ((json.loads(raw) or {}).get("data") or {}).get("klines") or []
+            if not klines:
+                continue
+            rows = []
+            for k in klines:
+                f = k.split(",")
+                if len(f) < 6:
+                    continue
+                # fields2=f51,f52,f53,f54,f55,f56
+                # → f[0]日期 f[1]开 f[2]收 f[3]高 f[4]低 f[5]量
+                rows.append((f[0], float(f[3]), float(f[4]), float(f[2])))
+            if rows:
+                return rows
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(1.0)
+    return None
 
 
 def resolve(code: str, xq: XQ):
@@ -262,6 +333,17 @@ def resolve(code: str, xq: XQ):
             break
         tried.append("中证:" + cd)
         time.sleep(0.8)
+
+    # 东财只在「前两个源没拿到」或「拿到的不够 10 年」时才去问 ——
+    # 它最全但也最慢（每只 1~3 秒），不能每只都等它。
+    need_more = (not cands) or (min(c[0][0][0] for c in cands) >
+                                (dt.date.today() - dt.timedelta(days=365 * 9)).isoformat())
+    if need_more:
+        rows = em_kline(code)
+        if rows:
+            cands.append((rows, "东财:" + ALIAS.get(code, code)))
+        else:
+            tried.append("东财:" + ALIAS.get(code, code))
 
     if not cands:
         return None, "未取到（" + "、".join(tried[:4]) + "…）"
@@ -298,11 +380,17 @@ def main() -> int:
             continue
         st["src"] = src
         items[code] = st
-        flag = " ⚠仅部分年份" if st["partial"] else ""
+        flag = " ⚠10年窗口不全" if st["partial"] else ""
         print(f"[{i:2}/{len(codes)}] {code:8} ✓ {src:22} "
-              f"2026高={st['hi2026']} ({st['hi2026Date']})  "
-              f"10年回撤={st['dd10']}% ({st['dd10PeakDate']}→{st['dd10TroughDate']}){flag}",
-              flush=True)
+              f"数据 {st['first']}→{st['last']}", flush=True)
+        print(f"          2026年内高={st['hi2026']} ({st['hi2026Date']})", flush=True)
+        for pfx, label in (("dd10", "10年最大回撤"), ("ddAll", "历史最大回撤")):
+            if st.get(pfx) is None:
+                print(f"          {label}=—（数据不足）")
+                continue
+            print(f"          {label}={st[pfx]}%  "
+                  f"{st[pfx+'PeakDate']}({st[pfx+'Peak']}) → "
+                  f"{st[pfx+'TroughDate']}({st[pfx+'Trough']})  历经 {st[pfx+'Days']} 天{flag}")
 
     out = {
         "updated": dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).isoformat(timespec="seconds"),
