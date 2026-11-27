@@ -239,16 +239,22 @@ def _max_dd(rows):
 
 
 def stats(rows, today: dt.date):
-    """从日线算：2024-09-24 以来最高价、10 年最大回撤、历史最大回撤。"""
+    """从日线算：2024-09-24 以来的两个回撤、10 年最大回撤、历史最大回撤。"""
     if not rows:
         return None
     win_start = (today - dt.timedelta(days=365 * WINDOW_YEARS + 5)).isoformat()
 
-    # 「2024-09-24 以来」的最高点：这一轮行情的起点（用户指定的口径）
-    hi24 = hi24_day = None
+    # 「2024-09-24 以来」这个窗口（这一轮行情的起点，用户指定的口径）
+    rows24 = [r for r in rows if r[0] >= START_24]
     last_close = rows[-1][3]
-    for day, hi, lo, close in rows:
-        if day >= START_24 and (hi24 is None or hi > hi24):
+
+    # ① 24-09-24 以来的**峰谷最大回撤**（区间内先创新高、再回落的最大跌幅）
+    dd24 = _max_dd(rows24) if rows24 else None
+
+    # ② 24-09-24 以来的**最高点 → 当前点位**的回撤（含当前价，前端用实时价重算）
+    hi24 = hi24_day = None
+    for day, hi, lo, close in rows24:
+        if hi24 is None or hi > hi24:
             hi24, hi24_day = hi, day
     if hi24 is None:                       # 数据没覆盖到这个日期 → 退回全历史最高
         best_row = max(rows, key=lambda r: r[1])
@@ -283,6 +289,7 @@ def stats(rows, today: dt.date):
         }
 
     out = {
+        # ② 最高点（前端拿实时价算「最高点→当前」的回撤）
         "hi24": round(hi24, 4) if hi24 else None,
         "hi24Date": hi24_day,
         # 兼容旧字段（前端已改用 hi24，这里留着免得别处引用报错）
@@ -297,6 +304,7 @@ def stats(rows, today: dt.date):
         "lastClose": round(last_close, 4),
         "n": len(rows),
     }
+    out.update(pack(dd24, "dd24"))         # ① 24-09-24 以来峰谷最大回撤
     out.update(pack(dd10, "dd10"))
     out.update(pack(ddall, "ddAll"))
     return out
@@ -461,8 +469,9 @@ def main() -> int:
         flag = " ⚠10年窗口不全" if st["partial"] else ""
         print(f"[{i:2}/{len(codes)}] {code:8} ✓ {src:22} "
               f"数据 {st['first']}→{st['last']}", flush=True)
-        print(f"          2024-09-24 以来高={st['hi24']} ({st['hi24Date']})", flush=True)
-        for pfx, label in (("dd10", "10年最大回撤"), ("ddAll", "历史最大回撤")):
+        print(f"          2024-09-24 以来最高={st['hi24']} ({st['hi24Date']})", flush=True)
+        for pfx, label in (("dd24", "24以来最大回撤"), ("dd10", "10年最大回撤"),
+                           ("ddAll", "历史最大回撤")):
             if st.get(pfx) is None:
                 print(f"          {label}=—（数据不足）")
                 continue

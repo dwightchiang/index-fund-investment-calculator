@@ -118,6 +118,8 @@ m.setDD({ items:{ "399006": {
   hi24: 4000, hi24Date:"2026-06-24",
   hi2026: 4000, hi2026Date:"2026-06-24",
   hiAll: 4037.959, hiAllDate:"2015-06-04",
+  dd24: 31.11, dd24Peak:4000, dd24PeakDate:"2026-05-14",
+  dd24Trough:2755.6, dd24TroughDate:"2026-11-26", dd24Days:196,
   dd10: 58.53, dd10Peak:3576.12, dd10PeakDate:"2021-07-21",
   dd10Trough:1482.99, dd10TroughDate:"2024-02-04", dd10Days:928,
   ddAll: 70.66, ddAllPeak:4037.959, ddAllPeakDate:"2015-06-04",
@@ -160,8 +162,8 @@ check("回撤对比关闭时不显示小字", m.ddLine(m.getState().list1[0]), "
 // 打开时小字含三个数（2024-09-24以来 / 10年 / 历史）
 m.setDdOn(true);
 const line = m.ddLine(m.getState().list1[0]);
-ok("★ 打开后小字含「2024-09-24以来」「10年」「历史」三块",
-   line.includes("2024-09-24以来") && line.includes("10年") && line.includes("历史"),
+ok("★ 打开后小字含「24以来最大回撤」「24以来到当前」「10年」「历史」四块",
+   line.includes("24以来最大回撤") && line.includes("24以来到当前") && line.includes("10年") && line.includes("历史"),
    line.slice(0, 300));
 ok("★ 小字里出现 50.00%（2024-09-24以来）、58.53%（10年）、70.66%（历史）",
    line.includes("−50.00%") && line.includes("−58.53%") && line.includes("−70.66%"),
@@ -181,11 +183,22 @@ ok("★ 历史回撤带持续天数（1232天）", line.includes("1232天"), lin
 
 // 三个指标竖向堆叠：每块一个 .ddr div，不是挤在一起的一串
 const ddrCount = (line.match(/class="ddr"/g) || []).length;
-check("★ 三个指标各自一个块（竖向堆叠，共 3 块）", ddrCount, 3);
+check("★ 四个指标各自一个块（竖向堆叠，共 4 块）", ddrCount, 4);
 ok("★ 每块都有标签列（ddr-lb）与数值列（ddr-pct）",
-   (line.match(/ddr-lb/g) || []).length === 3 && (line.match(/ddr-pct/g) || []).length === 3);
+   (line.match(/ddr-lb/g) || []).length === 4 && (line.match(/ddr-pct/g) || []).length === 4);
 ok("日期与天数各有独立 class（ddr-date / ddr-days）",
    line.includes('class="ddr-date"') && line.includes('class="ddr-days"'));
+
+// ★ 两个「24 以来」是不同口径，必须都在
+ok("★ 有「24以来最大回撤」（区间峰谷最惨那一段）",
+   line.includes("24以来最大回撤") && line.includes("−31.11%"), line.slice(0, 500));
+ok("★ 有「24以来到当前」（最高点→实时价，盘中会变）",
+   line.includes("24以来到当前"), line.slice(0, 500));
+ok("★ 24以来最大回撤 带区间点位与起止日（4000→2756 / 2026-05-14→2026-11-26 / 196天）",
+   line.includes("4000→2756") && line.includes("2026-05-14→2026-11-26") && line.includes("196天"),
+   line.slice(0, 600));
+ok("★ 两者数值可以不同（区间最大回撤 ⊃ 到当前回撤）",
+   line.includes("−31.11%") && line.includes("−50.00%"), line.slice(0, 600));
 
 // ★ 三个指标都必须显示点位（只看百分比不知道从多高跌下来的）
 ok("★ 2024-09-24以来 显示最高点位与日期",
