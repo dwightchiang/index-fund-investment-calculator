@@ -81,9 +81,10 @@
           padding:4px 6px;border-radius:6px;background:rgba(148,163,184,.07);
           font-size:10.5px;color:var(--dim);line-height:1.5;overflow:hidden}
   .ddr{display:flex;align-items:baseline;gap:7px;min-width:0;flex-wrap:wrap}
-  .ddr-lb{flex:0 0 auto;width:46px;opacity:.85}
+  .ddr-lb{flex:0 0 auto;width:92px;opacity:.85}
   .ddr-pct{flex:0 0 auto;min-width:52px;font-weight:600;font-variant-numeric:tabular-nums;
            text-align:right;color:var(--fg)}
+  .ddr-pk{font-variant-numeric:tabular-nums;opacity:.8}
   .ddr-date{font-variant-numeric:tabular-nums;opacity:.72}
   .ddr-days{font-variant-numeric:tabular-nums;opacity:.72}
   .ddr-note{font-size:10px;color:var(--amber);opacity:.9}
@@ -439,7 +440,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-28a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-28b";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1197,71 +1198,87 @@ function ddOf(code){
   const c=String(code||"").trim().toUpperCase();
   return (DD.items||{})[c] || (DD.items||{})[String(code||"").trim()] || null;
 }
-/* 当前点位距 2026 年内最高价的跌幅（正数=跌了）。
+/* 当前点位距「2024-09-24 以来最高价」的跌幅（正数=跌了）。
+   ★ 起点用 2024-09-24（924 行情启动日），不是 2026-01-01：
+     244 那波拉起来之后的高点，才是现在这轮下跌该比的那个顶。
    价格优先级：实时行情 → 手填价（回撤板块）→ 数据文件里的最新收盘
-   ★ 用户口径：用实时行情价，盘中会变；没有行情就退回最新收盘。 */
-function dd2026Of(it){
+   （用实时行情价，盘中会变；没有行情就退回最新收盘。） */
+function ddSince24Of(it){
   const d=ddOf(it.code);
-  if(!d || !(d.hi2026>0)) return null;
+  const hi = d ? (d.hi24 ?? d.hi2026) : null;   // hi2026 是旧字段，兼容老缓存
+  if(!d || !(hi>0)) return null;
   const q=quotes[it.code]||{};
   let price=null;
   if(typeof q.price==="number" && q.price>0 && !q.err) price=q.price;
   if(price===null){ const m=num(it.manual); if(m!==null && m>0) price=m; }
   if(price===null && d.lastClose>0) price=d.lastClose;
   if(!(price>0)) return null;
-  return { pct:(1-price/d.hi2026)*100, hi:d.hi2026, hiDate:d.hi2026Date, price };
+  return { pct:(1-price/hi)*100, hi, hiDate:d.hi24Date ?? d.hi2026Date, price };
+}
+/* 点位显示：大于 100 就取整（指数点位看整数够了），小于 100 保留两位
+   （有些指数基期是 1 或 10，取整会全变成 1） */
+function fmtPx(v){
+  const n=Number(v);
+  if(!isFinite(n)) return "—";
+  if(Math.abs(n)>=100) return n.toFixed(0);
+  if(Math.abs(n)>=1)   return n.toFixed(2);
+  return n.toFixed(3);
 }
 /* 回撤块：
-     ╭────────────────────────────────────────────╮
-     │ 2026以来  −28.09%                          │
-     │ 10年      −30.20%  2021-07-21→2024-02-04  928天 │
-     │ 历史      −70.66%  2015-06-04→2018-10-18  1232天│
-     ╰────────────────────────────────────────────╯
-   三个指标竖向堆叠、每层「标签 + 回撤% + 起止日 + 天数」，日期用完整年份。
-   悬停看峰值/谷底点位。 */
-function ddRow(label, pctTxt, from, to, days, tip){
+     ╭──────────────────────────────────────────────────────────╮
+     │ 2024-09-24以来  −26.32%      高 6720.94 (2026-05-14)      │
+     │ 10年            −41.29%      6073.88 2021-12-13 → …       │
+     │ 历史            −71.94%      5551.83 → 1557.85  294天     │
+     ╰──────────────────────────────────────────────────────────╯
+   三个指标竖向堆叠，每层「标签 + 回撤% + 点位 + 起止日 + 天数」。
+   ★ 点位必须显示出来：只看百分比无法判断这个回撤是从多高的位置跌下来的。 */
+function ddRow(label, pctTxt, peakTxt, from, to, days, tip){
   const dpart = (from && to) ? `<span class="ddr-date">${from}→${to}</span>` : "";
   const dday  = (days!==null && days!==undefined && days>=0)
               ? `<span class="ddr-days">${days}天</span>` : "";
+  const pk    = peakTxt ? `<span class="ddr-pk">${peakTxt}</span>` : "";
   return `<div class="ddr" title="${tip}">`
        + `<span class="ddr-lb">${label}</span>`
        + `<span class="ddr-pct">${pctTxt}</span>`
-       + dpart + dday
+       + pk + dpart + dday
        + `</div>`;
 }
 /* 定投行的回撤块（独占一行，在名称/分位/涨跌/金额那行的下面） */
 function ddLine(it){
   if(!ddOn) return "";
   const d=ddOf(it.code);
-  const a=dd2026Of(it);
+  const a=ddSince24Of(it);
   let html="";
 
-  // ① 2026 以来：当前点位距 2026 年内最高价的跌幅
+  // ① 2024-09-24 以来：当前点位距该起点后最高价的跌幅
   if(a){
-    html+=ddRow("2026以来", `−${a.pct.toFixed(2)}%`, "", "", null,
-      `当前 ${a.price} ÷ 2026年内最高 ${a.hi}（${a.hiDate}）− 1`);
+    const hp=`高 ${fmtPx(a.hi)} (${String(a.hiDate||"").slice(0,10)})`;
+    html+=ddRow("2024-09-24以来", `−${a.pct.toFixed(2)}%`, hp, "", "", null,
+      `2024-09-24 以来最高 ${a.hi}（${a.hiDate}）→ 当前 ${a.price}，回撤 ${a.pct.toFixed(2)}%`);
   }else{
-    html+=ddRow("2026以来", "—", "", "", null,
-      d ? "该指数暂无 2026 年行情数据" : "该指数没有历史数据（数据源未收录）");
+    html+=ddRow("2024-09-24以来", "—", "", "", "", null,
+      d ? "该指数暂无 2024-09-24 以来的行情数据" : "该指数没有历史数据（数据源未收录）");
   }
 
-  // ② 10年 / ③ 历史：峰谷最大回撤，带起止日与持续天数
+  // ② 10年 / ③ 历史：峰谷最大回撤，带点位、起止日与持续天数
   const parts=[["10年","dd10"],["历史","ddAll"]];
   for(const [label,pfx] of parts){
     const pct = d ? d[pfx] : null;
     if(pct===null || pct===undefined){
-      html+=ddRow(label, "—", "", "", null,
+      html+=ddRow(label, "—", "", "", "", null,
         d ? "该指数历史数据不足" : "该指数没有历史数据（数据源未收录）");
       continue;
     }
     const from=String(d[pfx+"PeakDate"]||"").slice(0,10);
     const to  =String(d[pfx+"TroughDate"]||"").slice(0,10);
     const days=d[pfx+"Days"];
+    // 点位：峰值 → 谷底，两个都显示，这样能看出是从多高跌到多低
+    const pk=`${fmtPx(d[pfx+"Peak"])}→${fmtPx(d[pfx+"Trough"])}`;
     const tip = `${label}最大回撤：峰值 ${d[pfx+"Peak"]}（${from}）`
               + ` → 谷底 ${d[pfx+"Trough"]}（${to}）`
               + (days!=null ? `　历经 ${days} 天` : "")
               + (d.partial && pfx==="dd10" ? `　⚠该指数数据只到 ${d.coveredFrom}，非完整10年` : "");
-    html+=ddRow(label, `−${Number(pct).toFixed(2)}%`, from, to, days, tip);
+    html+=ddRow(label, `−${Number(pct).toFixed(2)}%`, pk, from, to, days, tip);
   }
   if(d && d.partial && ddOn){
     html+=`<div class="ddr-note">数据起于 ${d.coveredFrom}，不足 10 年</div>`;

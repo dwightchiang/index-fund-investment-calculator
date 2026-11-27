@@ -76,7 +76,10 @@ DCA_CODES = [
 ]
 
 WINDOW_YEARS = 10
-START_2026 = "2026-01-01"
+# 「这一轮」的起点：2024-09-24（A 股 924 行情启动日）。
+# 用户要求把原来的「2026 以来」换成「2024-09-24 以来」——
+# 244 那波拉起来之后的高点，才是现在这轮下跌该比的那个顶。
+START_24 = "2024-09-24"
 
 
 # ---------------------------------------------------------------- 数据源
@@ -236,19 +239,20 @@ def _max_dd(rows):
 
 
 def stats(rows, today: dt.date):
-    """从日线算：2026 年内最高价、10 年最大回撤、历史最大回撤。"""
+    """从日线算：2024-09-24 以来最高价、10 年最大回撤、历史最大回撤。"""
     if not rows:
         return None
     win_start = (today - dt.timedelta(days=365 * WINDOW_YEARS + 5)).isoformat()
 
-    hi2026 = hi2026_day = None
+    # 「2024-09-24 以来」的最高点：这一轮行情的起点（用户指定的口径）
+    hi24 = hi24_day = None
     last_close = rows[-1][3]
     for day, hi, lo, close in rows:
-        if day >= START_2026 and (hi2026 is None or hi > hi2026):
-            hi2026, hi2026_day = hi, day
-    if hi2026 is None:
+        if day >= START_24 and (hi24 is None or hi > hi24):
+            hi24, hi24_day = hi, day
+    if hi24 is None:                       # 数据没覆盖到这个日期 → 退回全历史最高
         best_row = max(rows, key=lambda r: r[1])
-        hi2026, hi2026_day = best_row[1], best_row[0]
+        hi24, hi24_day = best_row[1], best_row[0]
 
     # 10 年窗口
     win_rows = [r for r in rows if r[0] >= win_start]
@@ -279,8 +283,11 @@ def stats(rows, today: dt.date):
         }
 
     out = {
-        "hi2026": round(hi2026, 4) if hi2026 else None,
-        "hi2026Date": hi2026_day,
+        "hi24": round(hi24, 4) if hi24 else None,
+        "hi24Date": hi24_day,
+        # 兼容旧字段（前端已改用 hi24，这里留着免得别处引用报错）
+        "hi2026": round(hi24, 4) if hi24 else None,
+        "hi2026Date": hi24_day,
         "hiAll": round(hi_all, 4) if hi_all else None,
         "hiAllDate": hi_all_day,
         "partial": partial,
@@ -454,7 +461,7 @@ def main() -> int:
         flag = " ⚠10年窗口不全" if st["partial"] else ""
         print(f"[{i:2}/{len(codes)}] {code:8} ✓ {src:22} "
               f"数据 {st['first']}→{st['last']}", flush=True)
-        print(f"          2026年内高={st['hi2026']} ({st['hi2026Date']})", flush=True)
+        print(f"          2024-09-24 以来高={st['hi24']} ({st['hi24Date']})", flush=True)
         for pfx, label in (("dd10", "10年最大回撤"), ("ddAll", "历史最大回撤")):
             if st.get(pfx) is None:
                 print(f"          {label}=—（数据不足）")

@@ -37,7 +37,7 @@ let ddOn = false;
 ${slice("function ddOf(", "/* 顶部按钮的状态")}
 module.exports = {
   viewOrder, applySort, rowPctOf, calcRow,
-  ddOf, dd2026Of, ddLine,
+  ddOf, ddSince24Of, ddLine, fmtPx,
   getDD: () => DD, setDD: d => Object.assign(DD, d),
   isDdOn: () => ddOn, setDdOn: v => { ddOn = v; },
   setQuotes: q => { quotes = q||{}; },
@@ -115,6 +115,7 @@ m.setList([
 ]);
 m.setQuotes({ "399006":{pct:-1, price:2000} });
 m.setDD({ items:{ "399006": {
+  hi24: 4000, hi24Date:"2026-06-24",
   hi2026: 4000, hi2026Date:"2026-06-24",
   hiAll: 4037.959, hiAllDate:"2015-06-04",
   dd10: 58.53, dd10Peak:3576.12, dd10PeakDate:"2021-07-21",
@@ -133,36 +134,36 @@ check("★ 打开回撤对比不改变金额", [amtOn, amtOff], [amtBefore, amtB
 
 // 2026 以来跌幅 = 1 − 2000/4000 = 50%
 m.setDdOn(true);
-const a = m.dd2026Of(m.getState().list1[0]);
-check("★ 2026以来跌幅 = 1 − 当前价/2026年内最高", Math.round(a.pct * 100) / 100, 50);
-check("2026以来跌幅带上最高点与日期", [a.hi, a.hiDate], [4000, "2026-06-24"]);
+const a = m.ddSince24Of(m.getState().list1[0]);
+check("★ 2024-09-24以来跌幅 = 1 − 当前价/该起点后最高", Math.round(a.pct * 100) / 100, 50);
+check("2024-09-24以来跌幅带上最高点与日期", [a.hi, a.hiDate], [4000, "2026-06-24"]);
 
 // 没行情 → 退回数据文件里的最新收盘
 m.setQuotes({});
-const a2 = m.dd2026Of(m.getState().list1[0]);
+const a2 = m.ddSince24Of(m.getState().list1[0]);
 check("无实时行情时退回最新收盘价算", Math.round(a2.pct * 100) / 100, 50);
 
 // 有手填价 → 手填优先于收盘
 m.getState().list1[0].manual = "3000";
-const a3 = m.dd2026Of(m.getState().list1[0]);
+const a3 = m.ddSince24Of(m.getState().list1[0]);
 check("有手填价时用手填价（3000/4000 → 25%）", Math.round(a3.pct * 100) / 100, 25);
 delete m.getState().list1[0].manual;
 
 // 该指数没数据 → null，不是 NaN
-const noData = m.dd2026Of({ code:"999999", name:"不存在" });
+const noData = m.ddSince24Of({ code:"999999", name:"不存在" });
 check("没数据的指数返回 null（不是 NaN）", noData, null);
 
 // 关闭时不输出任何小字
 m.setDdOn(false);
 check("回撤对比关闭时不显示小字", m.ddLine(m.getState().list1[0]), "");
 
-// 打开时小字含三个数（2026以来 / 10年 / 历史）
+// 打开时小字含三个数（2024-09-24以来 / 10年 / 历史）
 m.setDdOn(true);
 const line = m.ddLine(m.getState().list1[0]);
-ok("★ 打开后小字含「2026以来」「10年」「历史」三块",
-   line.includes("2026以来") && line.includes("10年") && line.includes("历史"),
+ok("★ 打开后小字含「2024-09-24以来」「10年」「历史」三块",
+   line.includes("2024-09-24以来") && line.includes("10年") && line.includes("历史"),
    line.slice(0, 300));
-ok("★ 小字里出现 50.00%（2026以来）、58.53%（10年）、70.66%（历史）",
+ok("★ 小字里出现 50.00%（2024-09-24以来）、58.53%（10年）、70.66%（历史）",
    line.includes("−50.00%") && line.includes("−58.53%") && line.includes("−70.66%"),
    line.slice(0, 400));
 
@@ -185,6 +186,18 @@ ok("★ 每块都有标签列（ddr-lb）与数值列（ddr-pct）",
    (line.match(/ddr-lb/g) || []).length === 3 && (line.match(/ddr-pct/g) || []).length === 3);
 ok("日期与天数各有独立 class（ddr-date / ddr-days）",
    line.includes('class="ddr-date"') && line.includes('class="ddr-days"'));
+
+// ★ 三个指标都必须显示点位（只看百分比不知道从多高跌下来的）
+ok("★ 2024-09-24以来 显示最高点位与日期",
+   line.includes("4000") && line.includes("2026-06-24"), line.slice(0, 400));
+ok("★ 10年 显示峰值→谷底点位（3576→1483）",
+   line.includes("3576") && line.includes("1483"), line.slice(0, 500));
+ok("★ 历史 显示峰值→谷底点位（4038→1185）",
+   line.includes("4038") && line.includes("1185"), line.slice(0, 600));
+ok("★ 不再出现「2026以来」字样（已改成 2024-09-24 以来）",
+   !line.includes("2026以来"), line.slice(0, 300));
+ok("点位用 ddr-pk class 单独排版",
+   (line.match(/ddr-pk/g) || []).length >= 3);
 
 ok("悬停时能看到峰值/谷底点位",
    line.includes("3576.12") && line.includes("1482.99"),
