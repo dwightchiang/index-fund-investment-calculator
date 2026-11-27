@@ -1,0 +1,38 @@
+name: 更新回撤对比数据
+
+# 每天拉一次各指数的历史日线，算好「2026 年内最高价」和「近10年最大回撤」，
+# 写进 data/drawdowns.json。网页的「📉 回撤对比」按钮只读这个文件，
+# 所以手机上打开是秒出的，不依赖任何实时接口。
+on:
+  schedule:
+    # 北京时间 18:10（UTC 10:10），A 股收盘后、美股开盘前
+    - cron: "10 10 * * 1-6"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 拉取历史日线并计算
+        run: python tools/fetch_drawdowns.py
+
+      - name: 提交变更
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/drawdowns.json
+          if git diff --staged --quiet; then
+            echo "数据没变化，不提交"
+          else
+            git commit -m "chore: 更新回撤对比数据 $(date -u +'%Y-%m-%d %H:%M')"
+            git push
+          fi

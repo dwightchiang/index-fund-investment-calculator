@@ -75,6 +75,10 @@
   .nmcell{display:flex;flex-direction:column;line-height:1.15;overflow:hidden;min-width:0}
   .nm2{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .code2{font-size:10px;color:#64748b;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis}
+  /* 📉 回撤对比：名字下面那行小字。手机上要能换行，不许撑破行高 */
+  .ddline{display:flex;flex-wrap:wrap;gap:0 10px;font-size:10px;color:var(--dim);
+          line-height:1.45;margin-top:1px;overflow:hidden}
+  .ddline b{font-weight:600;font-variant-numeric:tabular-nums}
   .ops{display:flex;gap:0}
   .ico{background:transparent;border:none;color:var(--gray);font-size:14px;padding:3px 5px;line-height:1}
   .ico.del{font-size:17px}
@@ -233,6 +237,7 @@
       <button id="fExpandAll" style="display:none">⤵ 展开全部</button>
       <button id="fSnap">存档</button>
       <button id="fYW" title="按「百分位数据起点」的年数加权：(5−最低分位)×(年数/10)+跌幅，再乘单位">年数加权</button>
+      <button id="fDD" title="显示：2026 年以来跌幅 ｜ 近10年最大回撤（只影响显示，不影响金额）">📉 回撤对比</button>
       <button id="fAH" title="纳指100：把盘后涨跌算进金额 —— (20−分位)×系数 − 盘后涨跌%×10（跌了多投、涨了少投）。也可在行内 ⚙ 里单独选源">盘后加减</button>
       <span id="count1" style="font-size:12px;color:var(--dim);margin-left:auto;align-self:center"></span>
     </div>
@@ -426,7 +431,7 @@
 <script>
 "use strict";
 const KEY = "dca-web-v4";
-const VER = "2026-11-25h";     // 版本号：出问题时先对一下这个，确认用的是最新文件
+const VER = "2026-11-27a";     // 版本号：出问题时先对一下这个，确认用的是最新文件
 const SEED_VER = 9;   // 9 = 增加「纳斯达克100（韭圈儿公式）」行
 /* 教训：升 SEED_VER 绝不能把 SEED1 的老行再「补」回来 —— 那是用户的删除意图。
    v9 一度用 add(s.list1, SEED1) 把用户删掉的 6 行重新塞回清单（31 → 37）。
@@ -1136,6 +1141,96 @@ async function diagnose(code){
   }
   out.push("只要各源的点位/涨跌幅一致，就说明数据是对的。");
   return `代码 ${code}\n\n`+out.join("\n");
+}
+
+/* ---------- 回撤对比（📉 按钮）----------
+   data/drawdowns.json 由 tools/fetch_drawdowns.py 预先算好（雪球/中证/腾讯日线），
+   这里只做两件事：
+     1. 读那份 JSON（含 2026 年内最高价、近10年最大回撤）
+     2. 用实时行情价算「当前距 2026 年内最高点的跌幅」
+   这样手机上打开是秒出的，不怕接口挂掉，也不受 CORS 限制。 */
+const DD_CACHE = "dca-dd-cache";
+const DD_VER_KEY = "dca-dd-ver";
+let DD = { items:{}, updated:"", loaded:false };
+let ddOn = false;                    // 「📉 回撤对比」是否展开（只影响显示，不参与计算）
+async function loadDrawdowns(force){
+  // 版本变了就丢掉旧缓存（避免改了统计口径还看着老数字）
+  try{
+    if(localStorage.getItem(DD_VER_KEY)!==VER) force=true;
+  }catch(e){}
+  if(!force){
+    try{
+      const c=JSON.parse(localStorage.getItem(DD_CACHE)||"null");
+      if(c && c.at && Date.now()-c.at < 24*3600*1000 && c.data && c.data.items){
+        DD=c.data; DD.loaded=true; return true;
+      }
+    }catch(e){}
+  }
+  const urls=["data/drawdowns.json","drawdowns.json"];
+  for(const u of urls){
+    try{
+      const r=await fetch(u+(u.includes("?")?"&":"?")+"_="+Date.now(),{cache:"no-store"});
+      if(!r.ok) continue;
+      const j=await r.json();
+      if(!j || !j.items) continue;
+      DD=j; DD.loaded=true;
+      try{
+        localStorage.setItem(DD_CACHE, JSON.stringify({at:Date.now(),data:j}));
+        localStorage.setItem(DD_VER_KEY, VER);
+      }catch(e){}
+      return true;
+    }catch(e){}
+  }
+  DD.loaded=true;                    // 读不到也要标记，界面上显示「—」而不是一直转圈
+  return false;
+}
+/* 某个代码的回撤数据（取不到返回 null） */
+function ddOf(code){
+  const c=String(code||"").trim().toUpperCase();
+  return (DD.items||{})[c] || (DD.items||{})[String(code||"").trim()] || null;
+}
+/* 当前点位距 2026 年内最高价的跌幅（正数=跌了）。
+   价格优先级：实时行情 → 手填价（回撤板块）→ 数据文件里的最新收盘
+   ★ 用户口径：用实时行情价，盘中会变；没有行情就退回最新收盘。 */
+function dd2026Of(it){
+  const d=ddOf(it.code);
+  if(!d || !(d.hi2026>0)) return null;
+  const q=quotes[it.code]||{};
+  let price=null;
+  if(typeof q.price==="number" && q.price>0 && !q.err) price=q.price;
+  if(price===null){ const m=num(it.manual); if(m!==null && m>0) price=m; }
+  if(price===null && d.lastClose>0) price=d.lastClose;
+  if(!(price>0)) return null;
+  return { pct:(1-price/d.hi2026)*100, hi:d.hi2026, hiDate:d.hi2026Date, price };
+}
+/* 定投行下面那行小字 */
+function ddLine(it){
+  if(!ddOn) return "";
+  const d=ddOf(it.code);
+  const a=dd2026Of(it);
+  const span=(txt,title,color)=>
+    `<span style="margin-right:10px;color:${color}" title="${title}">${txt}</span>`;
+  let html="";
+  if(a) html+=span(`2026以来 <b>−${a.pct.toFixed(2)}%</b>`,
+    `当前 ${a.price} ÷ 2026年内最高 ${a.hi}（${a.hiDate}）− 1`, "var(--dim)");
+  else  html+=span(`2026以来 <b>—</b>`, d?"该指数暂无 2026 年行情数据":"该指数没有历史数据（数据源未收录）", "var(--dim)");
+  if(d && d.dd10!==null && d.dd10!==undefined){
+    const part=d.partial ? `（仅 ${String(d.coveredFrom||"").slice(0,7)} 起）` : "";
+    html+=span(`10年最大回撤 <b>−${d.dd10.toFixed(2)}%</b>`,
+      `峰值 ${d.dd10Peak}（${d.dd10PeakDate}）→ 谷底 ${d.dd10Trough}（${d.dd10TroughDate}）${part}`, "var(--dim)");
+    if(d.partial) html+=`<span style="color:var(--amber);font-size:10px">数据仅从 ${String(d.coveredFrom||"").slice(0,7)} 起，非完整10年</span>`;
+  }else{
+    html+=span(`10年最大回撤 <b>—</b>`, d?"该指数历史数据不足":"该指数没有历史数据（数据源未收录）", "var(--dim)");
+  }
+  return `<div class="ddline">${html}</div>`;
+}
+/* 顶部按钮的状态（点亮 = 正在显示） */
+function updateDdBtn(){
+  const b=$("#fDD"); if(!b) return;
+  b.classList.toggle("on", ddOn);
+  b.title = ddOn
+    ? "收起回撤对比（只影响显示，不影响金额）"
+    : "显示：2026 年以来跌幅 ｜ 近10年最大回撤（只影响显示，不影响金额）";
 }
 
 /* ---------- 分位 ---------- */
@@ -2245,23 +2340,44 @@ function applySort(key){
   state.sort=key;
   save(); render();
 }
+/* 一行的「涨跌%」：普通行取当日涨跌，纳指100(jc20) 行取盘后涨跌。
+   ★ 这一层封装是为了「按涨跌排序」——jc20 行的计算结果里没有 chg 字段，
+     以前直接读 r.chg.pct 会抛 TypeError，把整个 render() 打断，
+     表现出来就是「排序选了没反应」（其实是后台崩了）。 */
+function rowPctOf(it, r){
+  if(it.formula==="jc20"){
+    const ah=afterHoursOf(it);
+    return (ah===null||ah===undefined||!isFinite(ah)) ? null : ah;
+  }
+  const p=r && r.chg ? r.chg.pct : null;
+  return (p===null||p===undefined||!isFinite(p)) ? null : p;
+}
 /* 按当前 state.sort 计算出的显示顺序（不改 state.order） */
 function viewOrder(){
   ensureOrder();
   const arr=state.order.map(c=>state.list1.find(x=>x.code===c)).filter(Boolean);
   const key=state.sort||"order";
   if(key==="order") return arr;
-  const rows=arr.map(it=>({it,r:calcRow(it)}));
+  if(key==="name") return arr.slice().sort((a,b)=>String(a.name||"").localeCompare(String(b.name||""),"zh"));
+  // 其它排序都要算一次金额/分位；任何一行算炸都不能连累整体顺序
+  const rows=arr.map(it=>{
+    let r=null;
+    try{ r=calcRow(it); }catch(e){ r=null; }
+    return {it, r};
+  });
   const pair=new Map(rows.map(p=>[p.it.code,p]));
+  const big=1e9;
   const keyOf={
-    pctile:p=>p.r.min===null?1e9:p.r.min,
-    name:  p=>p.it.name,
-    pct:   p=>p.r.chg.pct===null?1e9:p.r.chg.pct,     // 跌得多在前
-    amt:   p=>-(p.r.amount||0),                       // 金额大在前，0/负在后
+    pctile:p=>{ const v=p.r?p.r.min:null; return (v===null||v===undefined)?big:v; },
+    pct:   p=>{ const v=rowPctOf(p.it,p.r); return v===null?big:v; },  // 跌得多在前
+    amt:   p=>{ const v=p.r?p.r.amount:0; return -(isFinite(v)?v:0); }, // 金额大在前
   };
-  if(key==="name") return arr.slice().sort((a,b)=>a.name.localeCompare(b.name,"zh"));
   const f=keyOf[key]||keyOf.pctile;
-  return arr.slice().sort((a,b)=>f(pair.get(a.code))-f(pair.get(b.code)));
+  return arr.slice().sort((a,b)=>{
+    const x=f(pair.get(a.code)), y=f(pair.get(b.code));
+    if(x===y) return 0;                       // 相等时保持自定义顺序（sort 在 V8 是稳定的）
+    return (x<y?-1:1);                        // 不用 x-y：big 相减不会错，但字符串比较更安全
+  });
 }
 /* 手动调序：⚙ 面板里的置顶/上移/下移/移到底部（顺序也可在填表模式拖动） */
 function orderMove(id, act){
@@ -2518,6 +2634,7 @@ function renderSec1(){
         <div class="nmcell">
           <div class="nmrow"><span class="nm2">${it.name}</span>${jc?(hasAuto?jcBadge(it):`<span class="fb ${autoPct?"fb-stale":"fb-none"}" title="${autoPct?"数据还是 "+autoDate+" 的，没更新到前一交易日":"没获取到前一交易日的分位"}">?</span>`):pctBadge(it)}</div>
           <span class="code2">${it.code}${autoDate?(jc?` · <span style="color:var(--green)">前一交易日 ${autoDate}</span>`:` · ${autoDate}`):""}${(!q&&!jc)?` · <span style="color:#f87171" data-diag="${it.code}">重试</span>`:""}</span>
+          ${ddLine(it)}
         </div>
         ${pctCell}
         ${chgCell}
@@ -3714,6 +3831,15 @@ $("#fYW").onclick=()=>{
   state.yw = !state.yw;
   save(); syncYWBtn(); render();
 };
+/* 「📉 回撤对比」：点一下显示、再点隐藏。
+   ★ 只改显示，绝不动金额、不改回撤板块的「最高点」。
+   每次打开时重算实时价（盘中跌幅会变），所以打开就要重绘。 */
+$("#fDD").onclick=async ()=>{
+  ddOn = !ddOn;
+  updateDdBtn();
+  if(ddOn && !DD.loaded) await loadDrawdowns();
+  render();
+};
 /* 「盘后加减」总开关：
    打开 → 所有 jc 行（纳指100）的 ahPick 设为 auto（自动选可用的源）
    关闭 → 所有 jc 行的 ahPick 设为 off
@@ -4460,6 +4586,7 @@ if($("#cloudTokenInput")) $("#cloudTokenInput").value = cloudToken();
 updateFilters1();
 syncYWBtn();                                  // 「年数加权」开关的状态同步到按钮
 syncAHBtn();                                  // 「盘后加减」开关
+updateDdBtn();                                // 「📉 回撤对比」按钮
 cloudSetStatus();
 restoreQuoteTime();
 render();
@@ -4468,6 +4595,8 @@ Promise.all([loadPercentiles(), loadJiucai()]).then(()=>{
   cleanupPollutedLast();
   render();
 });
+// 回撤数据（2026 年内最高价 / 近10年最大回撤）：只在按钮打开时才需要
+loadDrawdowns().then(()=>{ if(ddOn) render(); });
 // 盘后涨跌（QIV 纯盘后 / 期货）：只对纳指100 有用，但开关打开或默认都拉一次
 loadAfterHours().then(ok=>{ if(ok) render(); });
 checkHashSync();

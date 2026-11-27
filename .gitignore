@@ -22,5 +22,11 @@ Thumbs.db
 desktop.ini
 
 
-# ---- ²âÊÔÁÙÊ±²úÎï ----
+# ---- æµ‹è¯•ä¸´æ—¶äº§ç‰© ----
 _*_test.js
+_check.js
+_repro*.js
+_probe*.py
+_probe*.json
+_peek*.js
+.tmp_msg.txt

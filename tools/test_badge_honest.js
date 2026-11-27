@@ -78,7 +78,13 @@ setTimeout(() => {
   // 蛋卷覆盖的 → ✓
   const b3 = vm.runInContext(`
     (function(){
-      AUTO = { items: { "399997": { pe_pct: 3.2, date: "2026-11-24" } } };
+      // ★ 日期不能写死：以前写 "2026-11-24"，当时是「当天」所以 ✓；
+      //   过了那天就变成「过期数据」→ !，测试自己变成时间炸弹。
+      //   这里取「最近交易日」，跟 pctBadge 的判据同源。
+      const d = new Date(); d.setDate(d.getDate()-1);
+      while(d.getDay()===0 || d.getDay()===6) d.setDate(d.getDate()-1);
+      const ymd = ""+d.getFullYear()+String(d.getMonth()+1).padStart(2,"0")+String(d.getDate()).padStart(2,"0");
+      AUTO = { items: { "399997": { pe_pct: 3.2, date: ymd.slice(0,4)+"-"+ymd.slice(4,6)+"-"+ymd.slice(6,8) } } };
       return pctBadge({ id:"t3", code:"399997", min:"", unit:10, pe:"", pb:"" });
     })()
   `, sandbox);
